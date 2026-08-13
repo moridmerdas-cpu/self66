@@ -1,0 +1,926 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>پنل مدیریت سلف — NexoSelf</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="/static/js/emoji.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+    :root {
+        --bg: #080a12;
+        --bg2: #0e1118;
+        --card: #141828;
+        --card2: #1a2035;
+        --border: #1e2640;
+        --accent: #6c4fff;
+        --accent2: #8b6fff;
+        --accent-glow: rgba(108,79,255,0.3);
+        --green: #1db954;
+        --green-glow: rgba(29,185,84,0.3);
+        --red: #e53935;
+        --red-glow: rgba(229,57,53,0.3);
+        --yellow: #f59e0b;
+        --text: #e8eaf0;
+        --text2: #8892aa;
+        --text3: #4a5270;
+        --radius: 14px;
+        --radius-sm: 10px;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body {
+        margin: 0; padding: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: 'Vazirmatn', sans-serif;
+        min-height: 100vh;
+        overscroll-behavior-y: contain;
+    }
+    #app { display: none; padding-bottom: 84px; }
+    #loading, #errorScreen {
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        min-height: 100vh; text-align: center; padding: 24px;
+    }
+    .spinner {
+        width: 40px; height: 40px; border-radius: 50%;
+        border: 3px solid var(--border); border-top-color: var(--accent);
+        animation: spin 0.8s linear infinite; margin-bottom: 16px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #errorScreen .icon { font-size: 44px; margin-bottom: 10px; }
+    #errorScreen p { color: var(--text2); font-size: 14px; line-height: 1.9; max-width: 320px; }
+    .btn {
+        display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+        border: none; border-radius: var(--radius-sm); padding: 12px 20px;
+        font-family: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
+        transition: transform .15s, opacity .15s; color: #fff;
+    }
+    .btn:active { transform: scale(0.96); }
+    .btn-accent { background: linear-gradient(135deg, var(--accent), var(--accent2)); }
+    .btn-green { background: var(--green); }
+    .btn-red { background: var(--red); }
+    .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+    .btn-block { width: 100%; }
+
+    /* header */
+    .topbar {
+        display: flex; align-items: center; gap: 12px;
+        padding: 16px; position: sticky; top: 0; z-index: 5;
+        background: linear-gradient(180deg, var(--bg2), rgba(14,17,24,0.85));
+        backdrop-filter: blur(8px);
+        border-bottom: 1px solid var(--border);
+    }
+    .avatar {
+        width: 44px; height: 44px; border-radius: 50%;
+        background: linear-gradient(135deg, var(--accent), var(--accent2));
+        display: flex; align-items: center; justify-content: center;
+        font-weight: 800; font-size: 17px; color: #fff; flex-shrink: 0;
+        overflow: hidden;
+    }
+    .avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .topbar .name { font-weight: 700; font-size: 15px; }
+    .topbar .sub { font-size: 12px; color: var(--text2); display: flex; align-items: center; gap: 5px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .dot.on { background: var(--green); box-shadow: 0 0 6px var(--green-glow); }
+    .dot.off { background: var(--red); box-shadow: 0 0 6px var(--red-glow); }
+
+    .content { padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+    .tab-panel { display: none; flex-direction: column; gap: 14px; }
+    .tab-panel.active { display: flex; }
+
+    .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 16px;
+    }
+    .card h3 {
+        margin: 0 0 12px; font-size: 14px; font-weight: 700;
+        display: flex; align-items: center; gap: 6px;
+    }
+    .card .hint { font-size: 11px; color: var(--text3); margin-top: 8px; line-height: 1.8; }
+
+    /* status hero card */
+    .hero { text-align: center; padding: 22px 16px; }
+    .hero .status-icon { font-size: 40px; margin-bottom: 6px; }
+    .hero .status-text { font-size: 16px; font-weight: 700; margin-bottom: 4px; }
+    .hero .status-sub { font-size: 12px; color: var(--text2); margin-bottom: 16px; }
+
+    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .stat-box {
+        background: var(--card2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+        padding: 12px; text-align: center;
+    }
+    .stat-box .val { font-size: 18px; font-weight: 800; color: var(--accent2); }
+    .stat-box .lbl { font-size: 11px; color: var(--text2); margin-top: 4px; }
+
+    /* toggles */
+    .toggle-row {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 11px 2px; border-bottom: 1px solid var(--border);
+    }
+    .toggle-row:last-child { border-bottom: none; }
+    .toggle-row .label { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 500; }
+    .tgl { position: relative; display: inline-block; width: 44px; height: 25px; flex-shrink: 0; }
+    .tgl input { opacity: 0; width: 0; height: 0; }
+    .tgl-s {
+        position: absolute; cursor: pointer; inset: 0; background: var(--border);
+        border-radius: 30px; transition: .2s;
+    }
+    .tgl-s::before {
+        content: ""; position: absolute; height: 19px; width: 19px; right: 3px; bottom: 3px;
+        background: #fff; border-radius: 50%; transition: .2s;
+    }
+    .tgl input:checked + .tgl-s { background: var(--accent); }
+    .tgl input:checked + .tgl-s::before { right: auto; left: 3px; }
+
+    /* form fields */
+    .field { margin-bottom: 12px; }
+    .field label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 6px; }
+    .field input, .field textarea, .field select {
+        width: 100%; background: var(--card2); border: 1px solid var(--border);
+        border-radius: var(--radius-sm); padding: 10px 12px; color: var(--text);
+        font-family: inherit; font-size: 13.5px;
+    }
+    .field textarea { min-height: 70px; resize: vertical; }
+
+    /* lists */
+    .list-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+    .list-tab-btn {
+        flex: 1; padding: 9px; border-radius: var(--radius-sm); border: 1px solid var(--border);
+        background: var(--card2); color: var(--text2); font-family: inherit; font-size: 13px;
+        font-weight: 600; cursor: pointer;
+    }
+    .list-tab-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .list-item {
+        display: flex; align-items: center; justify-content: space-between;
+        background: var(--card2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+        padding: 10px 12px; margin-bottom: 8px;
+    }
+    .list-item .info .name { font-size: 13px; font-weight: 600; }
+    .list-item .info .id { font-size: 11px; color: var(--text3); }
+    .empty-state { text-align: center; color: var(--text3); font-size: 13px; padding: 20px 0; }
+
+    .add-row { display: flex; gap: 8px; margin-bottom: 14px; }
+    .add-row input { flex: 1; }
+
+    /* deleted messages */
+    .dm-item { background: var(--card2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 8px; }
+    .dm-item .who { font-size: 12px; color: var(--accent2); font-weight: 600; margin-bottom: 4px; }
+    .dm-item .txt { font-size: 13px; word-break: break-word; }
+
+    /* bottom nav */
+    .bottomnav {
+        position: fixed; bottom: 0; left: 0; right: 0; z-index: 10;
+        display: flex; background: var(--bg2); border-top: 1px solid var(--border);
+        padding: 6px 4px calc(6px + env(safe-area-inset-bottom));
+    }
+    .nav-btn {
+        flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
+        background: none; border: none; color: var(--text3); font-family: inherit;
+        font-size: 10.5px; padding: 6px 2px; border-radius: var(--radius-sm); cursor: pointer;
+    }
+    .nav-btn .ic { font-size: 19px; }
+    .nav-btn.active { color: var(--accent2); }
+
+    .toast {
+        position: fixed; bottom: 92px; left: 50%; transform: translateX(-50%) translateY(20px);
+        background: var(--card2); border: 1px solid var(--border); color: var(--text);
+        padding: 10px 18px; border-radius: 30px; font-size: 13px; z-index: 50;
+        opacity: 0; transition: .25s; pointer-events: none; white-space: nowrap;
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+
+<div id="loading">
+    <div class="spinner"></div>
+    <div style="color:var(--text2); font-size:13px;">در حال بارگذاری پنل...</div>
+</div>
+
+<div id="errorScreen" style="display:none;">
+    <div class="icon">⚠️</div>
+    <p id="errorText">مشکلی پیش آمد.</p>
+    <div id="errorAction" style="margin-top:14px;"></div>
+</div>
+
+<div id="app">
+    <div class="topbar">
+        <div class="avatar" id="avatarBox"><span id="avatarLetter">?</span></div>
+        <div style="flex:1;">
+            <div class="name" id="userName">—</div>
+            <div class="sub"><span class="dot off" id="statusDot"></span><span id="statusLabel">در حال بررسی...</span></div>
+        </div>
+    </div>
+
+    <div class="content">
+
+        <!-- ── تب خانه ───────────────────────────────────────────────── -->
+        <div class="tab-panel active" id="tab-home">
+            <div class="card hero">
+                <div class="status-icon" id="heroIcon">🔴</div>
+                <div class="status-text" id="heroText">در حال بررسی...</div>
+                <div class="status-sub" id="heroSub"></div>
+                <button class="btn btn-block" id="powerBtn" onclick="togglePower()">—</button>
+            </div>
+
+            <div class="card">
+                <h3>💎 موجودی و امتیاز</h3>
+                <div class="stats-grid">
+                    <div class="stat-box"><div class="val" id="stTokens">-</div><div class="lbl">الماس</div></div>
+                    <div class="stat-box"><div class="val" id="stRefs">-</div><div class="lbl">دعوت‌شده</div></div>
+                </div>
+                <div style="display:flex; gap:8px; margin-top:12px;">
+                    <button class="btn btn-green" style="flex:1;" onclick="claimDaily()">🎁 هدیه روزانه</button>
+                    <button class="btn btn-outline" style="flex:1;" onclick="copyReferral()">🔗 کپی لینک رفرال</button>
+                </div>
+                <button class="btn btn-accent btn-block" style="margin-top:8px;" onclick="buyTokens()">🛒 خرید توکن</button>
+                <div class="hint" id="refHint"></div>
+            </div>
+
+            <div class="card" id="subCard" style="display:none;">
+                <h3>📦 اشتراک</h3>
+                <div class="stat-box" style="text-align:right;">
+                    <div style="font-size:13px;font-weight:600;" id="subPlan">-</div>
+                    <div class="hint" id="subExpiry" style="margin-top:6px;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── تب تنظیمات ────────────────────────────────────────────── -->
+        <div class="tab-panel" id="tab-settings">
+            <div class="card">
+                <h3>⚙️ کنترل اصلی</h3>
+                <div class="toggle-row"><span class="label">🤖 منشی خودکار</span>
+                    <label class="tgl"><input type="checkbox" data-key="secretary_active" onchange="toggleFeature(this)"><span class="tgl-s"></span></label></div>
+                <div class="toggle-row"><span class="label">👁️ سین خودکار</span>
+                    <label class="tgl"><input type="checkbox" data-key="auto_seen_active" onchange="toggleFeature(this)"><span class="tgl-s"></span></label></div>
+                <div class="toggle-row"><span class="label">❤️ ری‌اکشن خودکار</span>
+                    <label class="tgl"><input type="checkbox" data-key="auto_reaction_active" onchange="toggleFeature(this)"><span class="tgl-s"></span></label></div>
+                <div class="toggle-row"><span class="label">💾 ذخیره خودکار مدیا</span>
+                    <label class="tgl"><input type="checkbox" data-key="auto_save_media" onchange="toggleFeature(this)"><span class="tgl-s"></span></label></div>
+            </div>
+
+            <div class="card">
+                <h3>🛡 امنیت</h3>
+                <div class="toggle-row"><span class="label">🗑 ضدحذف</span>
+                    <label class="tgl"><input type="checkbox" data-key="anti_delete_active" onchange="toggleFeature(this)"><span class="tgl-s"></span></label></div>
+                <div class="toggle-row"><span class="label">🔗 ضدلینک</span>
+                    <label class="tgl"><input type="checkbox" data-key="anti_link_active" onchange="toggleFeature(this)"><span class="tgl-s"></span></label></div>
+                <div class="toggle-row"><span class="label">🔒 قفل خصوصی</span>
+                    <label class="tgl"><input type="checkbox" data-key="private_lock_active" onchange="toggleFeature(this)"><span class="tgl-s"></span></label></div>
+                <div class="toggle-row"><span class="label">⚔️ پاسخ به دشمن</span>
+                    <label class="tgl"><input type="checkbox" data-key="enemy_reply_active" onchange="toggleFeature(this)"><span class="tgl-s"></span></label></div>
+            </div>
+
+            <div class="card">
+                <h3>⏰ ساعت در نام و بیو</h3>
+                <div class="toggle-row"><span class="label">📛 ساعت در نام</span>
+                    <label class="tgl"><input type="checkbox" data-key="clock_name_active" onchange="toggleFeature(this)"><span class="tgl-s"></span></label></div>
+                <div class="toggle-row"><span class="label">📝 ساعت در بیو</span>
+                    <label class="tgl"><input type="checkbox" data-key="clock_bio_active" onchange="toggleFeature(this)"><span class="tgl-s"></span></label></div>
+                <div class="field" style="margin-top:12px;">
+                    <label>فونت پیام‌ها و ساعت</label>
+                    <select id="f_selected_font">
+                        <option value="0">۰ — متن عادی</option>
+                        <option value="1">۱ — Bold Sans</option>
+                        <option value="2">۲ — Italic Sans</option>
+                        <option value="3">۳ — Monospace</option>
+                        <option value="4">۴ — Fullwidth</option>
+                        <option value="5">۵ — Serif Bold</option>
+                        <option value="6">۶ — Script</option>
+                        <option value="7">۷ — Strikethrough</option>
+                        <option value="8">۸ — Underline</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>✏️ متن و پیام‌ها</h3>
+                <div class="field">
+                    <label>پیام منشی خودکار</label>
+                    <textarea id="f_secretary_message" placeholder="پیامی که در غیاب شما ارسال می‌شود..."></textarea>
+                </div>
+                <div class="field">
+                    <label>ایموجی ری‌اکشن خودکار</label>
+                    <input type="text" id="f_auto_reaction_emoji" placeholder="مثال: 👍">
+                </div>
+                <div class="field">
+                    <label>تأخیر بین پیام‌ها (ثانیه)</label>
+                    <input type="number" id="f_spam_delay" min="0" placeholder="مثال: 2">
+                </div>
+                <button class="btn btn-accent btn-block" onclick="saveSettings()">💾 ذخیره تنظیمات</button>
+            </div>
+        </div>
+
+        <!-- ── تب ابزار ──────────────────────────────────────────────── -->
+        <div class="tab-panel" id="tab-tools">
+            <div class="card">
+                <h3>🔧 ابزارها</h3>
+                <div class="field">
+                    <label>🌐 ترجمه</label>
+                    <div style="display:flex; gap:8px;">
+                        <input type="text" id="toolTranslate" placeholder="ترجمه [متن]" style="flex:1;">
+                        <button class="btn btn-accent" onclick="runTool('translate')">اجرا</button>
+                    </div>
+                </div>
+                <div class="field">
+                    <label>⛅ آب‌وهوا</label>
+                    <div style="display:flex; gap:8px;">
+                        <input type="text" id="toolWeather" placeholder="هوا [شهر]" style="flex:1;">
+                        <button class="btn btn-accent" onclick="runTool('weather')">اجرا</button>
+                    </div>
+                </div>
+                <div class="field" style="margin-bottom:0;">
+                    <label>💰 قیمت ارز</label>
+                    <div style="display:flex; gap:8px;">
+                        <input type="text" id="toolCurrency" placeholder="ارز [دلار/تتر/یورو/پوند/بیت‌کوین]" style="flex:1;">
+                        <button class="btn btn-accent" onclick="runTool('currency')">اجرا</button>
+                    </div>
+                </div>
+                <div class="hint">⚠️ این ابزارها داخل چت تلگرام با ربات سلف اجرا می‌شن.</div>
+            </div>
+
+            <div class="card">
+                <h3>💣 اسپم</h3>
+                <div class="field">
+                    <label>تعداد پیام</label>
+                    <input type="number" id="spamCount" value="5" min="1" max="50">
+                </div>
+                <div class="field" style="margin-bottom:0;">
+                    <label>متن پیام</label>
+                    <input type="text" id="spamText" placeholder="متن پیام">
+                </div>
+                <div style="display:flex; gap:8px; margin-top:12px;">
+                    <button class="btn btn-red" style="flex:1;" onclick="startSpam()">✈️ ارسال</button>
+                    <button class="btn btn-outline" style="flex:1;" onclick="stopSpam()">⏹ توقف</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>📥 سیو مدیا</h3>
+                <div class="field">
+                    <label>یوزرنیم یا لینک کانال</label>
+                    <input type="text" id="saveChannel" placeholder="@یوزرنیم یا لینک پست">
+                </div>
+                <div class="field" style="margin-bottom:0;">
+                    <label>تعداد</label>
+                    <input type="number" id="saveCount" value="50" min="1" max="500">
+                </div>
+                <div style="display:flex; gap:8px; margin-top:12px;">
+                    <button class="btn btn-accent" style="flex:1;" onclick="startSave()">📥 شروع</button>
+                    <button class="btn btn-outline" style="flex:1;" onclick="stopSave()">⏹ توقف</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>🔇 سایلنت</h3>
+                <div class="field">
+                    <label>آیدی چت</label>
+                    <div style="display:flex; gap:8px;">
+                        <input type="text" id="silentChatId" placeholder="آیدی چت" inputmode="numeric" style="flex:1;">
+                        <button class="btn btn-accent" onclick="addSilentChat()">🔇</button>
+                        <button class="btn btn-outline" onclick="removeSilentChat()">🔔</button>
+                    </div>
+                </div>
+                <div class="field" style="margin-bottom:0;">
+                    <label>آیدی کاربر</label>
+                    <div style="display:flex; gap:8px;">
+                        <input type="text" id="silentUserId" placeholder="آیدی کاربر" inputmode="numeric" style="flex:1;">
+                        <button class="btn btn-accent" onclick="addSilentUser()">🔇</button>
+                        <button class="btn btn-outline" onclick="removeSilentUser()">🔔</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── تب لیست‌ها ────────────────────────────────────────────── -->
+        <div class="tab-panel" id="tab-lists">
+            <div class="card">
+                <div class="list-tabs">
+                    <button class="list-tab-btn active" id="btnFriendsTab" onclick="switchListTab('friends')">🤝 دوستان</button>
+                    <button class="list-tab-btn" id="btnEnemiesTab" onclick="switchListTab('enemies')">⚔️ دشمنان</button>
+                </div>
+                <div class="add-row">
+                    <input type="text" id="listUserId" placeholder="آیدی عددی کاربر" inputmode="numeric">
+                    <button class="btn btn-accent" onclick="addListItem()">➕</button>
+                </div>
+                <div id="listContainer"></div>
+                <button class="btn btn-outline btn-block" style="margin-top:6px;" onclick="clearList()">🗑 پاک‌کردن همه</button>
+            </div>
+        </div>
+
+        <!-- ── تب پیام‌های حذف‌شده ───────────────────────────────────── -->
+        <div class="tab-panel" id="tab-deleted">
+            <div class="card">
+                <h3>🗑 آخرین پیام‌های حذف‌شده</h3>
+                <div id="deletedContainer"><div class="empty-state">در حال بارگذاری...</div></div>
+            </div>
+        </div>
+
+        <!-- ── تب پنل کامل (همون پنل دکمه‌ای هلپر بات، عیناً) ──────────── -->
+        <div class="tab-panel" id="tab-fullpanel">
+            <div class="card">
+                <div id="fpBreadcrumb" class="hint" style="margin-bottom:8px; display:none;">
+                    <button class="btn btn-outline" style="padding:4px 10px; font-size:12px;" onclick="fpGoMenu()">‹ منوی اصلی</button>
+                </div>
+                <h3 id="fpTitle">📋 پنل کامل</h3>
+                <div id="fpBody"><div class="empty-state">در حال بارگذاری...</div></div>
+            </div>
+        </div>
+
+    </div>
+
+    <div class="bottomnav">
+        <button class="nav-btn active" data-tab="home" onclick="switchTab('home')"><span class="ic">🏠</span>خانه</button>
+        <button class="nav-btn" data-tab="settings" onclick="switchTab('settings')"><span class="ic">⚙️</span>تنظیمات</button>
+        <button class="nav-btn" data-tab="fullpanel" onclick="switchTab('fullpanel')"><span class="ic">📋</span>پنل کامل</button>
+        <button class="nav-btn" data-tab="lists" onclick="switchTab('lists')"><span class="ic">👥</span>لیست‌ها</button>
+        <button class="nav-btn" data-tab="deleted" onclick="switchTab('deleted')"><span class="ic">🗑</span>حذف‌شده‌ها</button>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const tg = window.Telegram ? window.Telegram.WebApp : null;
+const BOT_USERNAME = {{ (bot_username or "")|tojson }};
+let currentSettings = {};
+let currentListType = "friends";
+
+function toast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+function haptic(kind) {
+    try { tg && tg.HapticFeedback && tg.HapticFeedback.impactOccurred(kind || 'light'); } catch(e) {}
+}
+
+async function api(url, options) {
+    options = options || {};
+    options.headers = Object.assign({ 'Content-Type': 'application/json' }, options.headers || {});
+    const res = await fetch(url, options);
+    let data = {};
+    try { data = await res.json(); } catch (e) {}
+    return { status: res.status, data };
+}
+
+function showError(message, actionHtml) {
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('app').style.display = 'none';
+    document.getElementById('errorScreen').style.display = 'flex';
+    document.getElementById('errorText').textContent = message;
+    document.getElementById('errorAction').innerHTML = actionHtml || '';
+}
+
+async function init() {
+    if (tg) {
+        tg.ready();
+        tg.expand();
+        try { tg.setHeaderColor('#0e1118'); } catch(e) {}
+        try { tg.setBackgroundColor('#080a12'); } catch(e) {}
+    }
+    const initData = tg ? tg.initData : '';
+    if (!initData) {
+        showError('این صفحه فقط باید از داخل تلگرام (مینی‌اپ) باز بشه.');
+        return;
+    }
+    const { status, data } = await api('/api/miniapp/auth', {
+        method: 'POST',
+        body: JSON.stringify({ initData })
+    });
+
+    if (!data.ok) {
+        if (data.error === 'no_account') {
+            const link = BOT_USERNAME ? `https://t.me/${BOT_USERNAME}` : '';
+            showError(
+                data.message || 'ابتدا باید با ربات ثبت‌نام کنید.',
+                link ? `<button class="btn btn-accent" onclick="window.Telegram.WebApp.openTelegramLink('${link}')">رفتن به ربات</button>` : ''
+            );
+        } else if (data.error === 'banned') {
+            showError(data.message || 'شما بن شده‌اید.');
+        } else {
+            showError(data.message || data.error || 'خطا در ورود.');
+        }
+        return;
+    }
+
+    const displayName = data.display_name || data.username || 'کاربر';
+    document.getElementById('userName').textContent = displayName;
+
+    const photoUrl = data.photo_url || (tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.photo_url) || '';
+    const avatarBox = document.getElementById('avatarBox');
+    if (photoUrl) {
+        avatarBox.innerHTML = `<img src="${photoUrl}" alt="">`;
+    } else {
+        avatarBox.innerHTML = `<span id="avatarLetter">${displayName.charAt(0).toUpperCase()}</span>`;
+    }
+
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('app').style.display = 'block';
+
+    await Promise.all([loadOverview(), loadSettings(), loadList('friends')]);
+    if (tg) tg.BackButton && tg.BackButton.hide();
+}
+
+// ── تب‌ها ──────────────────────────────────────────────────────────────────
+function switchTab(name) {
+    haptic('light');
+    document.querySelectorAll('.tab-panel').forEach(el => el.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+    document.querySelectorAll('.nav-btn').forEach(el => el.classList.toggle('active', el.dataset.tab === name));
+    if (name === 'deleted') loadDeleted();
+    if (name === 'fullpanel' && !fpCategories) fpLoadMenu();
+}
+
+// ── پنل کامل (رندر پویا از روی همون PANEL_CATEGORIES بات کمکی) ──────────────
+let fpCategories = null;   // { order, categories }
+let fpCurrentKey = null;   // دسته‌ی باز فعلی (null یعنی منوی اصلی)
+
+const FP_STYLE_CLASS = { primary: 'btn-outline', success: 'btn-green', danger: 'btn-red' };
+
+async function fpLoadMenu() {
+    const body = document.getElementById('fpBody');
+    body.innerHTML = '<div class="empty-state">در حال بارگذاری...</div>';
+    const { data } = await api('/api/panel/categories');
+    if (!data.ok) { body.innerHTML = '<div class="empty-state">خطا در دریافت پنل</div>'; return; }
+    fpCategories = data;
+    fpGoMenu();
+}
+
+function fpGoMenu() {
+    fpCurrentKey = null;
+    document.getElementById('fpBreadcrumb').style.display = 'none';
+    document.getElementById('fpTitle').textContent = '📋 پنل کامل';
+    if (!fpCategories) { fpLoadMenu(); return; }
+    const body = document.getElementById('fpBody');
+    body.innerHTML = '';
+    const grid = document.createElement('div');
+    grid.style.cssText = 'display:flex; flex-wrap:wrap; gap:8px;';
+    fpCategories.order.forEach(key => {
+        const cat = fpCategories.categories[key];
+        if (!cat) return;
+        const btn = document.createElement('button');
+        btn.className = 'btn ' + (FP_STYLE_CLASS[cat.menu_style] || 'btn-outline');
+        btn.style.cssText = 'flex:1 1 45%; min-width:120px;';
+        btn.textContent = cat.title;
+        btn.onclick = () => fpOpenCategory(key);
+        grid.appendChild(btn);
+    });
+    body.appendChild(grid);
+}
+
+async function fpOpenCategory(key, page) {
+    const cat = fpCategories.categories[key];
+    if (!cat) return;
+
+    if (cat.stub_message) { toast(cat.stub_message); return; }
+
+    // دکمه‌های تک‌عملی که زیرمنو ندارن و مستقیم اجرا می‌شن
+    if (cat.direct_command) {
+        const cmd = cat.direct_command;
+        if (cmd.startsWith('PANELINFO::')) { fpShowInfo(key, cmd.slice('PANELINFO::'.length)); return; }
+        if (cmd.startsWith('INFO::')) { toast(cmd.slice('INFO::'.length)); return; }
+        toast('در حال اجرا: ' + cat.title);
+        await api('/api/panel/execute', { method: 'POST', body: JSON.stringify({ command_text: cmd }) });
+        return;
+    }
+
+    fpCurrentKey = key;
+    document.getElementById('fpBreadcrumb').style.display = 'block';
+    document.getElementById('fpTitle').textContent = cat.title;
+
+    const body = document.getElementById('fpBody');
+    body.innerHTML = '<div class="empty-state">در حال بارگذاری...</div>';
+
+    const { data } = await api('/api/panel/category_commands', {
+        method: 'POST',
+        body: JSON.stringify({ category_key: key }),
+    });
+    if (!data.ok) { body.innerHTML = '<div class="empty-state">خطا</div>'; return; }
+
+    body.innerHTML = '';
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'display:flex; flex-direction:column; gap:8px;';
+
+    (data.items || []).forEach(item => {
+        const [, label, cmd, style] = item;
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-block ' + (FP_STYLE_CLASS[style] || 'btn-outline');
+        btn.textContent = label;
+        btn.onclick = () => fpRunItem(key, cmd);
+        wrap.appendChild(btn);
+    });
+
+    (cat.children || []).forEach(([label, childKey]) => {
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-block btn-outline';
+        btn.textContent = label + ' ›';
+        btn.onclick = () => fpOpenCategory(childKey);
+        wrap.appendChild(btn);
+    });
+
+    body.appendChild(wrap);
+}
+
+async function fpRunItem(categoryKey, cmd) {
+    if (cmd.startsWith('PANELINFO::')) { fpShowInfo(categoryKey, cmd.slice('PANELINFO::'.length)); return; }
+    if (cmd.startsWith('INFO::')) { toast(cmd.slice('INFO::'.length)); return; }
+    await api('/api/panel/execute', { method: 'POST', body: JSON.stringify({ command_text: cmd }) });
+    fpOpenCategory(categoryKey); // رفرش برای دیدن رنگ/وضعیت تازه‌ی سوییچ‌ها
+}
+
+function fpShowInfo(categoryKey, text) {
+    const body = document.getElementById('fpBody');
+    body.innerHTML = '';
+    const pre = document.createElement('div');
+    pre.style.cssText = 'white-space:pre-wrap; font-size:13px; line-height:1.9; color:var(--text2);';
+    pre.textContent = text;
+    body.appendChild(pre);
+    const back = document.createElement('button');
+    back.className = 'btn btn-outline btn-block';
+    back.style.marginTop = '12px';
+    back.textContent = '‹ بازگشت';
+    back.onclick = () => fpOpenCategory(categoryKey);
+    body.appendChild(back);
+}
+
+// ── خانه ───────────────────────────────────────────────────────────────────
+async function loadOverview() {
+    const { data } = await api('/api/miniapp/overview');
+    if (!data.ok) return;
+    overviewData = data;
+
+    updateStatusUI(data.running);
+
+    document.getElementById('stTokens').textContent = (data.tokens.balance ?? 0).toLocaleString('fa-IR');
+    document.getElementById('stRefs').textContent = (data.tokens.ref_count ?? 0).toLocaleString('fa-IR');
+    document.getElementById('refHint').textContent = data.ref_link
+        ? `لینک دعوت: ${data.ref_link}`
+        : '';
+
+    if (data.subscription) {
+        document.getElementById('subCard').style.display = 'block';
+        document.getElementById('subPlan').textContent = 'پلن: ' + (data.subscription.plan || '-');
+        const exp = data.subscription.expires_at ? new Date(data.subscription.expires_at) : null;
+        document.getElementById('subExpiry').textContent = exp
+            ? 'انقضا: ' + exp.toLocaleDateString('fa-IR')
+            : '';
+    }
+}
+
+function updateStatusUI(running) {
+    const dot = document.getElementById('statusDot');
+    const label = document.getElementById('statusLabel');
+    const heroIcon = document.getElementById('heroIcon');
+    const heroText = document.getElementById('heroText');
+    const heroSub = document.getElementById('heroSub');
+    const powerBtn = document.getElementById('powerBtn');
+
+    dot.className = 'dot ' + (running ? 'on' : 'off');
+    label.textContent = running ? 'سلف فعال است' : 'سلف خاموش است';
+    heroIcon.textContent = running ? '🟢' : '🔴';
+    heroText.textContent = running ? 'سلف روشن است' : 'سلف خاموش است';
+    heroSub.textContent = running ? 'همه‌چیز داره درست کار می‌کنه' : 'برای فعال‌سازی، دکمه زیر رو بزن';
+    powerBtn.textContent = running ? '⏻ خاموش کردن سلف' : '⏻ روشن کردن سلف';
+    powerBtn.className = 'btn btn-block ' + (running ? 'btn-red' : 'btn-green');
+    powerBtn.dataset.running = running ? '1' : '0';
+}
+
+async function togglePower() {
+    haptic('medium');
+    const running = document.getElementById('powerBtn').dataset.running === '1';
+    const url = running ? '/api/stop' : '/api/start';
+    const { data } = await api(url, { method: 'POST' });
+    if (data.ok) {
+        updateStatusUI(!running);
+        toast(data.message || (running ? 'سلف خاموش شد' : 'سلف روشن شد'));
+    } else {
+        toast(data.error || 'خطا');
+    }
+}
+
+async function claimDaily() {
+    haptic('light');
+    const { data } = await api('/api/tokens/daily', { method: 'POST' });
+    toast(data.message || (data.ok ? 'دریافت شد!' : 'خطا'));
+    if (data.ok) loadOverview();
+}
+
+let overviewData = {};
+
+function copyReferral() {
+    haptic('light');
+    const link = overviewData.ref_link || '';
+    if (!link) { toast('ربات توکن تنظیم نشده'); return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(link).then(() => toast('🔗 لینک رفرال کپی شد!')).catch(() => toast(link));
+    } else {
+        toast(link);
+    }
+}
+
+function buyTokens() {
+    haptic('light');
+    const username = overviewData.bot_username || '';
+    if (!username) { toast('ربات توکن تنظیم نشده'); return; }
+    const url = 'https://t.me/' + username + '?start=buy';
+    if (tg && tg.openTelegramLink) tg.openTelegramLink(url);
+    else window.open(url, '_blank');
+}
+
+// ── تنظیمات ────────────────────────────────────────────────────────────────
+async function loadSettings() {
+    const { data } = await api('/api/settings');
+    currentSettings = data || {};
+    document.querySelectorAll('input[data-key]').forEach(inp => {
+        inp.checked = currentSettings[inp.dataset.key] === '1';
+    });
+    document.getElementById('f_secretary_message').value = currentSettings.secretary_message || '';
+    document.getElementById('f_auto_reaction_emoji').value = currentSettings.auto_reaction_emoji || '';
+    document.getElementById('f_spam_delay').value = currentSettings.spam_delay || '';
+    document.getElementById('f_selected_font').value = currentSettings.selected_font || '';
+}
+
+async function toggleFeature(input) {
+    haptic('light');
+    const key = input.dataset.key;
+    const prevChecked = !input.checked;
+    const { data } = await api('/api/toggle/' + key, { method: 'POST' });
+    if (!data.ok) {
+        input.checked = prevChecked;
+        toast(data.error || 'خطا در تغییر وضعیت');
+    }
+}
+
+async function saveSettings() {
+    haptic('medium');
+    const payload = {
+        secretary_message: document.getElementById('f_secretary_message').value,
+        auto_reaction_emoji: document.getElementById('f_auto_reaction_emoji').value,
+        spam_delay: document.getElementById('f_spam_delay').value,
+        selected_font: document.getElementById('f_selected_font').value,
+    };
+    const { data } = await api('/api/settings', { method: 'POST', body: JSON.stringify(payload) });
+    toast(data.ok ? '✅ ذخیره شد' : (data.error || 'خطا'));
+}
+
+// ── لیست‌ها (دوستان/دشمنان) ──────────────────────────────────────────────
+function switchListTab(type) {
+    haptic('light');
+    currentListType = type;
+    document.getElementById('btnFriendsTab').classList.toggle('active', type === 'friends');
+    document.getElementById('btnEnemiesTab').classList.toggle('active', type === 'enemies');
+    loadList(type);
+}
+
+async function loadList(type) {
+    const { data } = await api('/api/' + type);
+    const box = document.getElementById('listContainer');
+    if (!data || !data.length) {
+        box.innerHTML = '<div class="empty-state">لیست خالی است.</div>';
+        return;
+    }
+    box.innerHTML = data.map(item => `
+        <div class="list-item">
+            <div class="info">
+                <div class="name">${item.name || item.username || 'بدون نام'}</div>
+                <div class="id">${item.user_id}</div>
+            </div>
+            <button class="btn btn-outline" style="padding:6px 12px;" onclick="removeListItem(${item.user_id})">حذف</button>
+        </div>
+    `).join('');
+}
+
+async function addListItem() {
+    const idInput = document.getElementById('listUserId');
+    const uid = parseInt(idInput.value.trim());
+    if (!uid) { toast('آیدی عددی معتبر بنویس'); return; }
+    haptic('light');
+    const { data } = await api('/api/' + currentListType, {
+        method: 'POST', body: JSON.stringify({ user_id: uid })
+    });
+    if (data.ok) {
+        idInput.value = '';
+        loadList(currentListType);
+        toast('✅ اضافه شد');
+    } else {
+        toast(data.error || 'خطا');
+    }
+}
+
+async function removeListItem(uid) {
+    haptic('light');
+    await api('/api/' + currentListType + '/' + uid, { method: 'DELETE' });
+    loadList(currentListType);
+}
+
+async function clearList() {
+    haptic('medium');
+    await api('/api/' + currentListType + '/clear', { method: 'POST' });
+    loadList(currentListType);
+    toast('✅ لیست پاک شد');
+}
+
+// ── ابزارها ───────────────────────────────────────────────────────────────
+function runTool(type) {
+    haptic('light');
+    if (type === 'translate') {
+        const text = document.getElementById('toolTranslate').value.trim();
+        if (!text) { toast('متن را وارد کنید'); return; }
+        toast('🌐 ترجمه در تلگرام اجرا می‌شود');
+    } else if (type === 'weather') {
+        const city = document.getElementById('toolWeather').value.trim();
+        if (!city) { toast('شهر را وارد کنید'); return; }
+        toast('⛅ هوا در تلگرام اجرا می‌شود');
+    } else if (type === 'currency') {
+        toast('💰 قیمت ارز در تلگرام اجرا می‌شود');
+    }
+}
+
+// ── اسپم ──────────────────────────────────────────────────────────────────
+function startSpam() {
+    haptic('medium');
+    const count = document.getElementById('spamCount').value || 5;
+    const text = document.getElementById('spamText').value.trim();
+    if (!text) { toast('متن پیام را وارد کنید'); return; }
+    toast('💣 ارسال ' + count + ' پیام اسپم — در تلگرام اجرا می‌شود');
+}
+
+function stopSpam() {
+    haptic('light');
+    toast('⏹ توقف اسپم — در تلگرام اجرا می‌شود');
+}
+
+// ── سیو مدیا ──────────────────────────────────────────────────────────────
+function startSave() {
+    haptic('medium');
+    const channel = document.getElementById('saveChannel').value.trim();
+    const count = document.getElementById('saveCount').value || 50;
+    if (!channel) { toast('یوزرنیم یا لینک کانال را وارد کنید'); return; }
+    toast('📥 سیو مدیا از ' + channel + ' (' + count + ' عدد) — در تلگرام اجرا می‌شود');
+}
+
+function stopSave() {
+    haptic('light');
+    toast('⏹ توقف سیو — در تلگرام اجرا می‌شود');
+}
+
+// ── سایلنت ────────────────────────────────────────────────────────────────
+async function addSilentChat() {
+    const id = document.getElementById('silentChatId').value.trim();
+    if (!id) { toast('آیدی چت را وارد کنید'); return; }
+    haptic('light');
+    const { data } = await api('/api/silent/chat/' + id, { method: 'POST' });
+    toast(data.ok ? '🔇 چت سایلنت شد' : (data.error || 'خطا'));
+}
+
+async function removeSilentChat() {
+    const id = document.getElementById('silentChatId').value.trim();
+    if (!id) { toast('آیدی چت را وارد کنید'); return; }
+    haptic('light');
+    const { data } = await api('/api/silent/chat/' + id, { method: 'DELETE' });
+    toast(data.ok ? '🔔 سایلنت چت برداشته شد' : (data.error || 'خطا'));
+}
+
+async function addSilentUser() {
+    const id = document.getElementById('silentUserId').value.trim();
+    if (!id) { toast('آیدی کاربر را وارد کنید'); return; }
+    haptic('light');
+    const { data } = await api('/api/silent/user/' + id, { method: 'POST' });
+    toast(data.ok ? '🔇 کاربر سایلنت شد' : (data.error || 'خطا'));
+}
+
+async function removeSilentUser() {
+    const id = document.getElementById('silentUserId').value.trim();
+    if (!id) { toast('آیدی کاربر را وارد کنید'); return; }
+    haptic('light');
+    const { data } = await api('/api/silent/user/' + id, { method: 'DELETE' });
+    toast(data.ok ? '🔔 سایلنت کاربر برداشته شد' : (data.error || 'خطا'));
+}
+
+// ── پیام‌های حذف‌شده ──────────────────────────────────────────────────────
+async function loadDeleted() {
+    const box = document.getElementById('deletedContainer');
+    const { data } = await api('/api/deleted_messages');
+    if (!data || !data.length) {
+        box.innerHTML = '<div class="empty-state">پیام حذف‌شده‌ای ثبت نشده.</div>';
+        return;
+    }
+    box.innerHTML = data.map(m => `
+        <div class="dm-item">
+            <div class="who">${m.sender_name || m.sender_id || 'ناشناس'}</div>
+            <div class="txt">${(m.message || '[بدون متن / مدیا]').toString().slice(0, 300)}</div>
+        </div>
+    `).join('');
+}
+
+init();
+</script>
+</body>
+</html>
