@@ -24,6 +24,14 @@ SETTING_AI_CONTEXT  = "ai_context"         # متن زمینه که کاربر �
 # جلوگیری از اسپم: برای هر فرستنده چقدر صبر کنیم قبل از جواب بعدی (ثانیه)
 AI_REPLY_COOLDOWN = 120   # 2 دقیقه
 
+# حداکثر تعداد پیامی که هر کاربر (فرستنده) در روز می‌تونه از منشی هوش
+# مصنوعی جواب بگیره. بعد از این تعداد، تا فردا دیگه جواب نمی‌ده.
+MAX_DAILY_MESSAGES_PER_USER = 10
+
+# پیشوندِ کلیدِ شمارنده‌ی روزانه در دیتابیس: هر owner+sender+روز یک کلید
+# جدا داره تا با تعویضِ روز خودکار صفر بشه (نیازی به job پاکسازی نیست)
+SETTING_AI_DAILY_PREFIX = "ai_daily_count"
+
 # حداکثر طول پیام ورودی که به DeepSeek می‌فرستیم
 MAX_INPUT_CHARS = 800
 
@@ -64,6 +72,32 @@ def _is_on_cooldown(owner_id: int, sender_id: int) -> bool:
 
 def _set_cooldown(owner_id: int, sender_id: int):
     _reply_cooldown_cache[(owner_id, sender_id)] = time.time()
+
+
+# ─── محدودیتِ روزانه‌یِ پیام به‌ازایِ هر فرستنده ─────────────────────────────
+def _today_key(sender_id: int) -> str:
+    """کلیدِ تنظیماتِ منحصربه‌فرد برای این فرستنده در همین روز (به‌وقتِ سرور).
+    چون تاریخ در خودِ کلید هست، با شروعِ روزِ جدید خودکار صفر می‌شه."""
+    day_str = time.strftime("%Y-%m-%d")
+    return f"{SETTING_AI_DAILY_PREFIX}_{sender_id}_{day_str}"
+
+
+def _get_daily_count(owner_id: int, sender_id: int) -> int:
+    try:
+        return int(db.get_setting(owner_id, _today_key(sender_id), "0") or "0")
+    except Exception:
+        return 0
+
+
+def _increment_daily_count(owner_id: int, sender_id: int) -> int:
+    new_count = _get_daily_count(owner_id, sender_id) + 1
+    db.set_setting(owner_id, _today_key(sender_id), str(new_count))
+    return new_count
+
+
+def has_reached_daily_limit(owner_id: int, sender_id: int) -> bool:
+    """True اگه این فرستنده امروز به سقفِ ۱۰ پیام رسیده باشه."""
+    return _get_daily_count(owner_id, sender_id) >= MAX_DAILY_MESSAGES_PER_USER
 
 
 # ─── دریافت تنظیمات ──────────────────────────────────────────────────────────
@@ -173,6 +207,22 @@ async def handle_ai_autoreply(
     if _is_on_cooldown(owner_id, sender_id):
         return False
 
+    # ─── شرط ۵: سقفِ روزانه‌ی پیام برای این فرستنده (۱۰ پیام در روز) ────────
+    if has_reached_daily_limit(owner_id, sender_id):
+        # فقط دقیقاً همون لحظه‌ای که به سقف رسید یک پیامِ اطلاع‌رسانی می‌فرستیم
+        # (نه هر پیامِ بعدی)، تا اسپم نشه ولی کاربر بی‌خبر هم نمونه.
+        if _get_daily_count(owner_id, sender_id) == MAX_DAILY_MESSAGES_PER_USER:
+            try:
+                await client.send_message(
+                    sender_id,
+                    f"⏳ سقفِ {MAX_DAILY_MESSAGES_PER_USER} پیام برای امروز پر شده. فردا دوباره می‌تونید پیام بدید.",
+                )
+                _set_cooldown(owner_id, sender_id)
+                _increment_daily_count(owner_id, sender_id)  # از سقف رد می‌کنیم که این پیام دوباره تکرار نشه
+            except Exception:
+                pass
+        return False
+
     # ─── دریافت زمینه کاربر ──────────────────────────────────────────────────
     context = get_ai_context(owner_id)
     system_prompt = _build_system_prompt(context)
@@ -186,6 +236,7 @@ async def handle_ai_autoreply(
     try:
         await client.send_message(sender_id, reply_text)
         _set_cooldown(owner_id, sender_id)
+        _increment_daily_count(owner_id, sender_id)
         print(f"[AI] جواب به {sender_name} ({sender_id}) فرستاده شد")
         return True
     except Exception as e:

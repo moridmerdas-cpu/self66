@@ -98,6 +98,31 @@ _last_outgoing_activity = {}  # {owner_id: timestamp} — آخرین باری ک
 AI_AWAY_SECONDS = 300  # اگه ۵ دقیقه از آخرین پیامِ خودِ کاربر گذشته باشه، "غایب" در نظر گرفته می‌شه
 AI_REPLY_COOLDOWN = 60  # حداقل فاصله بین دو پاسخ هوش مصنوعی در یک چت
 
+# حداکثر تعداد پیامی که هر کاربر (فرستنده) در روز می‌تونه از دستیارِ
+# هوش مصنوعیِ آموزش‌دیده (همون «دیپ سیک»/ai_assistant) جواب بگیره.
+AI_ASSISTANT_DAILY_LIMIT = 10
+_AI_ASSISTANT_DAILY_PREFIX = "ai_assistant_daily_count"
+
+
+def _ai_assistant_daily_key(sender_id: int) -> str:
+    """کلیدِ تنظیماتِ شمارنده‌ی روزانه برای این فرستنده؛ چون تاریخ توی
+    خودِ کلید هست، با شروعِ روزِ جدید خودکار صفر می‌شه."""
+    day_str = time.strftime("%Y-%m-%d")
+    return f"{_AI_ASSISTANT_DAILY_PREFIX}_{sender_id}_{day_str}"
+
+
+def _ai_assistant_get_daily_count(owner_id: int, sender_id: int) -> int:
+    try:
+        return int(db.get_setting(owner_id, _ai_assistant_daily_key(sender_id), "0") or "0")
+    except Exception:
+        return 0
+
+
+def _ai_assistant_increment_daily_count(owner_id: int, sender_id: int) -> int:
+    new_count = _ai_assistant_get_daily_count(owner_id, sender_id) + 1
+    db.set_setting(owner_id, _ai_assistant_daily_key(sender_id), str(new_count))
+    return new_count
+
 # ─── نگهبان چت: کش موقتِ متنِ پیام‌ها برای تشخیصِ حذف/ویرایش ──────────────────
 _msg_cache = {}  # {(chat_id, msg_id): text}
 _msg_sender_cache = {}  # {(chat_id, msg_id): sender display name}
@@ -837,14 +862,29 @@ def _register_handlers(cl: TelegramClient, owner_id: int, entry: dict):
                 now = time.time()
                 last_ai_reply = _last_ai_reply.get(chat_id, 0)
                 if now - last_ai_reply >= AI_REPLY_COOLDOWN:
-                    knowledge = db.get_setting(owner_id, "ai_knowledge_base", "")
-                    try:
-                        answer = await _ask_deepseek(knowledge, text)
-                        if answer:
-                            await event.reply(answer)
-                            _last_ai_reply[chat_id] = now
-                    except Exception as e:
-                        print(f"خطا در پاسخ هوش مصنوعی: {e}")
+                    daily_count = _ai_assistant_get_daily_count(owner_id, sender_id)
+                    if daily_count >= AI_ASSISTANT_DAILY_LIMIT:
+                        # فقط دقیقاً همون لحظه‌ای که سقف پر شده یک پیامِ اطلاع‌رسانی
+                        # می‌فرستیم، نه هر پیامِ بعدی، تا اسپم نشه.
+                        if daily_count == AI_ASSISTANT_DAILY_LIMIT:
+                            try:
+                                await event.reply(
+                                    f"⏳ سقفِ {AI_ASSISTANT_DAILY_LIMIT} پیام برای امروز پر شده. فردا دوباره می‌تونید پیام بدید."
+                                )
+                                _last_ai_reply[chat_id] = now
+                                _ai_assistant_increment_daily_count(owner_id, sender_id)
+                            except Exception:
+                                pass
+                    else:
+                        knowledge = db.get_setting(owner_id, "ai_knowledge_base", "")
+                        try:
+                            answer = await _ask_deepseek(knowledge, text)
+                            if answer:
+                                await event.reply(answer)
+                                _last_ai_reply[chat_id] = now
+                                _ai_assistant_increment_daily_count(owner_id, sender_id)
+                        except Exception as e:
+                            print(f"خطا در پاسخ هوش مصنوعی: {e}")
 
 
         # ✅ ری‌اکشن خودکار — با بات‌ها کاری نداشته باش
