@@ -2,6 +2,7 @@ import os
 import threading
 import time
 import secrets
+import math
 import telebot
 from telebot import types
 import requests
@@ -3002,6 +3003,57 @@ def start_token_bot():
     DIAMOND_RATE    = 50    # هر الماس = ۵۰ تومان (۱۰۰ الماس = ۵,۰۰۰ تومان)
     DIAMOND_MIN_BUY = 100   # حداقل خرید الماس
 
+    # ── نرخ استارز ────────────────────────────────────────────────────────────
+    # قیمتِ هر استارِ تلگرام به تومان (برایِ محاسبه‌ی تعدادِ استارزِ لازم برایِ
+    # هر پلن). این عدد صرفاً برایِ نمایش/محاسبه‌ی تعدادِ استارزه؛ خودِ مبلغِ
+    # واقعیِ پرداختی توسطِ تلگرام (بر اساسِ همون تعداد استار) از کاربر گرفته
+    # می‌شه، نه از این نرخ.
+    STARS_TOMAN_RATE = 2816   # هر ۱ استار ≈ ۲,۸۱۶ تومان
+
+    def _stars_for_toman(toman: int) -> int:
+        """تعدادِ استارزِ لازم برایِ یک مبلغِ تومانی؛ همیشه رو به بالا گرد
+        می‌شه تا مبلغِ دریافتی هیچ‌وقت کمتر از قیمتِ پلن نشه."""
+        return max(1, math.ceil(toman / STARS_TOMAN_RATE))
+
+    # هر پلن با یکی از سه ایموجیِ پریمیومِ استاره‌ای نمایش داده می‌شه
+    # (هفتگی=۱ ستاره، ماهانه=۲ ستاره، دو‌ماهه=۳ ستاره)
+    STARS_PLAN_ICON = {
+        "weekly":    EM.ID_STAR_1,
+        "monthly":   EM.ID_STAR_2,
+        "bimonthly": EM.ID_STAR_3,
+    }
+
+    # ── نرخ TON ──────────────────────────────────────────────────────────────
+    TON_TOMAN_RATE = getattr(config, "TON_TOMAN_RATE", 248196)   # هر ۱ TON ≈ این‌قدر تومان
+    TON_WALLET_ADDRESS = getattr(config, "TON_WALLET_ADDRESS", "")
+    TON_PAYMENT_TIMEOUT = 30 * 60     # ۳۰ دقیقه فرصت برای پرداخت هر فاکتورِ TON
+    TON_POLL_SECONDS = 20             # هر چند ثانیه بلاک‌چین چک بشه
+
+    def _ton_for_toman(toman: int) -> float:
+        """مبلغِ TON لازم برایِ یک قیمتِ تومانی؛ رو به بالا تا ۹ رقمِ اعشار
+        (دقتِ نانو‌تن) گرد می‌شه تا مبلغِ دریافتی هیچ‌وقت کمتر از قیمتِ
+        پلن نشه."""
+        raw = toman / TON_TOMAN_RATE
+        return math.ceil(raw * 1_000_000_000) / 1_000_000_000
+
+    # {ton_amount_str(9 رقم اعشار): {"tg_id", "chat_id", "message_id", "plan_key",
+    #  "payment_id", "expires_ts"}} — هر فاکتورِ بازِ TON که هنوز پرداخت نشده.
+    # چون هر پرداخت مبلغِ TON یکتای خودش رو داره (به‌خاطرِ افزودنِ پسوندِ
+    # یکتا بر اساسِ payment_id)، تشخیصِ اینکه کدوم تراکنشِ بلاک‌چین مالِ کدوم
+    # کاربره فقط از رویِ خودِ مبلغ انجام می‌شه — بدونِ نیاز به مموی/کامنتِ
+    # روی تراکنش (که خیلی از کیف‌پول‌ها مثلِ کیف‌پولِ خودِ تلگرام موقعِ
+    # ارسال ازش پشتیبانی نمی‌کنن یا کاربر یادش می‌ره پر کنه).
+    _pending_ton_payments = {}
+    _seen_ton_tx_hashes = set()  # جلوگیری از پردازشِ دوباره‌ی یک تراکنش
+
+    def _ton_unique_amount(base_ton: float, payment_id: int) -> float:
+        """به مبلغِ پایه یک افزودنیِ یکتا (بر اساسِ آیدیِ پرداخت) در حدِ
+        چند نانو‌تن اضافه می‌کنه تا مبلغِ نهایی بینِ فاکتورهای هم‌زمان یکتا
+        بمونه؛ این افزودنی آنقدر کوچیکه (کمتر از ۰.۰۰۱ TON) که روی قیمتِ
+        نمایشی به کاربر تاثیرِ محسوسی نداره."""
+        offset = (payment_id % 1000) / 1_000_000  # حداکثر ۰.۰۰۱ TON اضافه
+        return round(base_ton + offset, 9)
+
     def _load_purchase_settings():
         """اورراید مقادیرِ PLANS و DIAMOND_RATE با آخرین چیزی که مالک از
         پنلِ «تنظیم مشخصات خرید» ذخیره کرده (اگه چیزی ذخیره نشده باشه،
@@ -3020,10 +3072,30 @@ def start_token_bot():
         try:
             raw_rate = db.get_global_setting("diamond_rate", "")
             if raw_rate:
-                return int(raw_rate)
+                DIAMOND_RATE_LOADED = int(raw_rate)
+            else:
+                DIAMOND_RATE_LOADED = DIAMOND_RATE
         except Exception as e:
             print(f"⚠️ خطا در لودِ diamond_rate: {e}")
-        return DIAMOND_RATE
+            DIAMOND_RATE_LOADED = DIAMOND_RATE
+
+        nonlocal TON_TOMAN_RATE
+        try:
+            raw_ton_rate = db.get_global_setting("ton_rate", "")
+            if raw_ton_rate:
+                TON_TOMAN_RATE = int(raw_ton_rate)
+        except Exception as e:
+            print(f"⚠️ خطا در لودِ ton_rate: {e}")
+
+        nonlocal TON_WALLET_ADDRESS
+        try:
+            raw_wallet = db.get_global_setting("ton_wallet_address", "")
+            if raw_wallet:
+                TON_WALLET_ADDRESS = raw_wallet
+        except Exception as e:
+            print(f"⚠️ خطا در لودِ ton_wallet_address: {e}")
+
+        return DIAMOND_RATE_LOADED
 
     DIAMOND_RATE = _load_purchase_settings()
 
@@ -3039,6 +3111,12 @@ def start_token_bot():
             db.set_global_setting("diamond_rate", str(rate))
         except Exception as e:
             print(f"⚠️ خطا در ذخیره‌ی diamond_rate: {e}")
+
+    def _save_ton_rate_setting(rate):
+        try:
+            db.set_global_setting("ton_rate", str(rate))
+        except Exception as e:
+            print(f"⚠️ خطا در ذخیره‌ی ton_rate: {e}")
 
     # وضعیت موقت کاربران برای خرید
     _purchase_states = {}  # tg_id -> {step, data}
@@ -3538,10 +3616,27 @@ def start_token_bot():
         markup.add(
             types.InlineKeyboardButton(" خرید اشتراک با کارت", callback_data="pur_sub_card", style="primary", icon_custom_emoji_id=str(EM.ID_SET_CARD)),
         )
+        # ⭐ زیرمنوی «پرداخت ارزی» (TON + استارز)
+        markup.add(
+            types.InlineKeyboardButton(" پرداخت ارزی", callback_data="pur_forex_menu", style="success", icon_custom_emoji_id=str(EM.ID_STAR_1)),
+        )
         # 🟢 دکمه خرید الماس با رنگ success (سبز)
         markup.add(
             types.InlineKeyboardButton(" خرید الماس", callback_data="pur_buy_diamond", style="success", icon_custom_emoji_id=str(EM.ID_DIAMONDS)),
         )
+        return markup
+
+    def _forex_menu_keyboard():
+        """زیرمنوی «پرداخت ارزی»: انتخابِ بین TON و استارزِ تلگرام."""
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        markup.add(types.InlineKeyboardButton(
+            " پرداخت با TON", callback_data="pur_sub_ton", style="success",
+        ))
+        markup.add(types.InlineKeyboardButton(
+            " پرداخت با استارز", callback_data="pur_sub_stars", style="success",
+            icon_custom_emoji_id=str(EM.ID_STAR_1),
+        ))
+        markup.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="pur_back", style="danger"))
         return markup
 
     def _plans_keyboard(prefix: str):
@@ -3557,12 +3652,44 @@ def start_token_bot():
         markup.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="pur_back", style="danger"))
         return markup
 
+    def _stars_plans_keyboard():
+        """کیبوردِ انتخابِ پلن برایِ پرداخت با استارز؛ هر دکمه با ایموجیِ
+        پریمیومِ استاره‌ایِ مخصوصِ همون پلن (۱/۲/۳ ستاره) نمایش داده می‌شه."""
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for key, p in PLANS.items():
+            stars = _stars_for_toman(p["toman"])
+            icon_id = STARS_PLAN_ICON.get(key, EM.ID_STAR_1)
+            markup.add(types.InlineKeyboardButton(
+                f" {p['fa']} — {stars} استار",
+                callback_data=f"pur_sstars_{key}",
+                style="success",
+                icon_custom_emoji_id=str(icon_id),
+            ))
+        markup.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="pur_forex_menu", style="danger"))
+        return markup
+
+    def _ton_plans_keyboard():
+        """کیبوردِ انتخابِ پلن برایِ پرداخت با TON؛ مبلغِ TON از رویِ نرخِ
+        فعلی محاسبه می‌شه (بدونِ افزودنیِ یکتا، فقط برایِ نمایش)."""
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for key, p in PLANS.items():
+            ton_amount = _ton_for_toman(p["toman"])
+            markup.add(types.InlineKeyboardButton(
+                f" {p['fa']} — ~{ton_amount:.3f} TON",
+                callback_data=f"pur_ston_{key}",
+                style="success",
+            ))
+        markup.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="pur_forex_menu", style="danger"))
+        return markup
+
     # ── تنظیم مشخصات خرید (پنل مالک) ─────────────────────────────────────────
     def _purchase_settings_text():
         lines = ["🛠 <b>تنظیم مشخصات خرید</b>\n"]
         for p in PLANS.values():
             lines.append(f"• {p['fa']}: {p['toman']:,} تومان / {p['diamonds']:,} الماس")
         lines.append(f"\n💵 نرخ فعلی هر الماس: <b>{DIAMOND_RATE} تومان</b>")
+        lines.append(f"💠 نرخ فعلی هر TON: <b>{TON_TOMAN_RATE:,} تومان</b>")
+        lines.append(f"👛 کیف‌پول TON: <code>{TON_WALLET_ADDRESS or 'تنظیم‌نشده'}</code>")
         lines.append("\nیکی از گزینه‌های زیر را انتخاب کنید:")
         return "\n".join(lines)
 
@@ -3571,6 +3698,8 @@ def start_token_bot():
         for key, p in PLANS.items():
             markup.add(types.InlineKeyboardButton(f"✏️ ویرایش پلن {p['fa']}", callback_data=f"aps_edit_{key}", style="primary"))
         markup.add(types.InlineKeyboardButton("💵 تغییر نرخ هر الماس", callback_data="aps_rate", style="primary"))
+        markup.add(types.InlineKeyboardButton("💠 تغییر نرخ هر TON", callback_data="aps_ton_rate", style="primary"))
+        markup.add(types.InlineKeyboardButton("👛 تغییر آدرس کیف‌پول TON", callback_data="aps_ton_wallet", style="primary"))
         markup.add(types.InlineKeyboardButton("🎟 کدهای تخفیف", callback_data="admin_discount_codes", style="success"))
         markup.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin_panel", style="danger"))
         return markup
@@ -3668,6 +3797,15 @@ def start_token_bot():
                     chat_id=call.message.chat.id, message_id=call.message.message_id,
                     reply_markup=_purchase_main_keyboard()
                 )
+
+            # ── زیرمنوی «پرداخت ارزی» ──────────────────────────────────────
+            elif data == "pur_forex_menu":
+                _bot.edit_message_text(
+                    f"{EM.EMOJI_STAR_1} <b>پرداخت ارزی</b>\n\nیکی از روش‌های زیر را انتخاب کن:",
+                    chat_id=call.message.chat.id, message_id=call.message.message_id,
+                    reply_markup=_forex_menu_keyboard()
+                )
+                _bot.answer_callback_query(call.id)
 
             # ── اشتراک با الماس ─────────────────────────────────────────────
             elif data == "pur_sub_diamond":
@@ -3769,6 +3907,108 @@ def start_token_bot():
                     "🎟 کدِ تخفیف رو بنویس:",
                     chat_id=call.message.chat.id, message_id=call.message.message_id,
                     reply_markup=markup
+                )
+                _bot.answer_callback_query(call.id)
+
+            # ── اشتراک با استارز تلگرام ───────────────────────────────────────
+            elif data == "pur_sub_stars":
+                _bot.edit_message_text(
+                    f"{EM.EMOJI_STAR_1} <b>خرید اشتراک با استارز</b>\n\n"
+                    f"یک پلن را انتخاب کن؛ بعد از انتخاب، همینجا صورت‌حسابِ "
+                    f"پرداخت با استارزِ تلگرام برات باز می‌شه:",
+                    chat_id=call.message.chat.id, message_id=call.message.message_id,
+                    reply_markup=_stars_plans_keyboard()
+                )
+                _bot.answer_callback_query(call.id)
+
+            elif data.startswith("pur_sstars_"):
+                plan_key = data[len("pur_sstars_"):]
+                plan = PLANS.get(plan_key)
+                if not plan:
+                    return _bot.answer_callback_query(call.id, "❌ پلن نامعتبر", show_alert=True)
+                stars = _stars_for_toman(plan["toman"])
+                try:
+                    _bot.send_invoice(
+                        chat_id=call.message.chat.id,
+                        title=f"اشتراک {plan['fa']}",
+                        description=f"فعال‌سازیِ اشتراک {plan['fa']} ({plan['days']} روز) با استارزِ تلگرام",
+                        invoice_payload=f"sub_stars_{plan_key}_{tg_id}",
+                        provider_token="",           # پرداخت با Stars نیاز به provider_token نداره
+                        currency="XTR",               # ارزِ استارزِ تلگرام
+                        prices=[types.LabeledPrice(label=f"اشتراک {plan['fa']}", amount=stars)],
+                    )
+                    _bot.answer_callback_query(call.id)
+                except Exception as e:
+                    print(f"❌ خطا در ارسالِ فاکتورِ استارز: {e}")
+                    _bot.answer_callback_query(call.id, "❌ خطا در ساختِ فاکتورِ پرداخت. دوباره تلاش کن.", show_alert=True)
+
+            # ── اشتراک با TON ──────────────────────────────────────────────────
+            elif data == "pur_sub_ton":
+                if not TON_WALLET_ADDRESS:
+                    return _bot.answer_callback_query(call.id, "❌ پرداختِ TON فعلاً تنظیم نشده.", show_alert=True)
+                _bot.edit_message_text(
+                    "💠 <b>خرید اشتراک با TON</b>\n\nیک پلن را انتخاب کن:",
+                    chat_id=call.message.chat.id, message_id=call.message.message_id,
+                    reply_markup=_ton_plans_keyboard()
+                )
+                _bot.answer_callback_query(call.id)
+
+            elif data.startswith("pur_ston_"):
+                plan_key = data[len("pur_ston_"):]
+                plan = PLANS.get(plan_key)
+                if not plan:
+                    return _bot.answer_callback_query(call.id, "❌ پلن نامعتبر", show_alert=True)
+                if not TON_WALLET_ADDRESS:
+                    return _bot.answer_callback_query(call.id, "❌ پرداختِ TON فعلاً تنظیم نشده.", show_alert=True)
+
+                payment_id = db.create_payment(
+                    account["id"], tg_id, "subscription_ton",
+                    plan=plan_key, toman_amount=plan["toman"],
+                )
+                if not payment_id:
+                    return _bot.answer_callback_query(call.id, "❌ خطا در ثبتِ پرداخت، دوباره تلاش کن.", show_alert=True)
+
+                base_ton = _ton_for_toman(plan["toman"])
+                exact_ton = _ton_unique_amount(base_ton, payment_id)
+                amount_key = f"{exact_ton:.9f}"
+                expires_ts = time.time() + TON_PAYMENT_TIMEOUT
+
+                _pending_ton_payments[amount_key] = {
+                    "tg_id": tg_id,
+                    "chat_id": call.message.chat.id,
+                    "account_id": account["id"],
+                    "plan_key": plan_key,
+                    "payment_id": payment_id,
+                    "expires_ts": expires_ts,
+                }
+
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("🔙 انصراف", callback_data="pur_ton_cancel", style="danger"))
+                _bot.edit_message_text(
+                    f"💠 <b>پرداخت اشتراک {plan['fa']} با TON</b>\n\n"
+                    f"مبلغِ دقیق را به آدرسِ زیر ارسال کن:\n\n"
+                    f"💰 مبلغ: <code>{exact_ton:.9f}</code> TON\n"
+                    f"👛 آدرس: <code>{TON_WALLET_ADDRESS}</code>\n\n"
+                    f"⚠️ حتماً <b>دقیقاً همین مبلغ</b> رو بفرست (نه بیشتر نه کمتر)؛ "
+                    f"تشخیصِ خودکارِ پرداخت فقط از رویِ همین عددِ دقیق انجام می‌شه.\n"
+                    f"⏳ این فاکتور تا <b>۳۰ دقیقه</b> معتبره.\n\n"
+                    f"بعد از پرداخت، همین‌جا منتظر بمون — به‌محضِ دیده‌شدنِ تراکنش روی "
+                    f"بلاک‌چین، اشتراک <b>خودکار</b> فعال می‌شه و پیامِ تاییدیه می‌گیری.",
+                    chat_id=call.message.chat.id, message_id=call.message.message_id,
+                    reply_markup=markup
+                )
+                _bot.answer_callback_query(call.id)
+
+            elif data == "pur_ton_cancel":
+                # اگه هنوز فاکتورِ بازِ این کاربر توی _pending_ton_payments بود، حذفش کن
+                for k in list(_pending_ton_payments.keys()):
+                    v = _pending_ton_payments[k]
+                    if v["tg_id"] == tg_id and v["chat_id"] == call.message.chat.id:
+                        _pending_ton_payments.pop(k, None)
+                _bot.edit_message_text(
+                    "❌ فاکتورِ TON لغو شد.",
+                    chat_id=call.message.chat.id, message_id=call.message.message_id,
+                    reply_markup=_forex_menu_keyboard()
                 )
                 _bot.answer_callback_query(call.id)
 
@@ -3891,6 +4131,138 @@ def start_token_bot():
         except Exception as e:
             print(f"❌ خطا در callback_purchase: {e}")
             _bot.answer_callback_query(call.id, f"❌ خطا: {str(e)[:80]}", show_alert=True)
+
+    # ── پرداخت با استارز: تاییدِ خودکارِ pre-checkout ────────────────────────
+    # تلگرام قبل از تکمیلِ هر پرداخت با Stars این کوئری رو می‌فرسته؛ چون
+    # قیمتِ فاکتور همون لحظه‌ی send_invoice قفل شده و چیزی برای اعتبارسنجیِ
+    # اضافه نداریم، همیشه تایید می‌کنیم (طبقِ رفتارِ استانداردِ ربات‌های
+    # تلگرام برای Stars/Payments).
+    @_bot.pre_checkout_query_handler(func=lambda query: True)
+    def _handle_stars_pre_checkout(query):
+        try:
+            _bot.answer_pre_checkout_query(query.id, ok=True)
+        except Exception as e:
+            print(f"❌ خطا در pre_checkout_query استارز: {e}")
+
+    # ── پرداخت با استارز: تکمیلِ موفق ─────────────────────────────────────────
+    @_bot.message_handler(content_types=["successful_payment"], chat_types=["private"])
+    def _handle_stars_successful_payment(message):
+        try:
+            sp = message.successful_payment
+            payload = sp.invoice_payload or ""
+            parts = payload.split("_")
+            # فرمتِ payload: sub_stars_{plan_key}_{tg_id}
+            if len(parts) < 4 or parts[0] != "sub" or parts[1] != "stars":
+                print(f"⚠️ payload نامعتبر برای پرداختِ استارز: {payload!r}")
+                return
+            plan_key = parts[2]
+            plan = PLANS.get(plan_key)
+            if not plan:
+                print(f"⚠️ پلنِ نامعتبر در payload استارز: {plan_key!r}")
+                return
+
+            tg_id = message.from_user.id
+            account = db.get_account_by_tg_id(tg_id)
+            if not account:
+                print(f"⚠️ اکانتی برایِ tg_id={tg_id} در پرداختِ استارز پیدا نشد.")
+                return
+
+            # ثبتِ پرداخت در تاریخچه (وضعیت مستقیم approved، چون خودِ تلگرام
+            # پرداخت رو قبلاً تاییدِ نهایی کرده و نیازی به تاییدِ دستیِ ادمین
+            # مثلِ پرداختِ کارت‌به‌کارت نیست)
+            payment_id = db.create_payment(
+                account["id"], tg_id, "subscription_stars",
+                plan=plan_key, toman_amount=plan["toman"],
+            )
+            if payment_id:
+                db.update_payment(payment_id, status="approved")
+
+            expires = db.set_subscription(account["id"], plan_key, plan["days"])
+            exp_str = expires.strftime("%Y-%m-%d") if expires else "نامشخص"
+
+            _bot.send_message(
+                message.chat.id,
+                f"{EM.EMOJI_STAR_1} <b>پرداخت با استارز موفق بود!</b>\n\n"
+                f"✅ اشتراک <b>{plan['fa']}</b> فعال شد\n"
+                f"⭐ {sp.total_amount} استار پرداخت شد\n"
+                f"📅 انقضا: <b>{exp_str}</b>"
+            )
+        except Exception as e:
+            print(f"❌ خطا در successful_payment استارز: {e}")
+
+    # ── پرداخت با TON: چکِ دوره‌ایِ بلاک‌چین (پول‌کردنِ فاکتورهای باز) ────────
+    def _finalize_ton_payment(pending: dict, tx_hash: str):
+        try:
+            plan = PLANS.get(pending["plan_key"])
+            if not plan:
+                print(f"⚠️ پلنِ نامعتبر در فاکتورِ TON: {pending['plan_key']!r}")
+                return
+            db.update_payment(pending["payment_id"], status="approved")
+            expires = db.set_subscription(pending["account_id"], pending["plan_key"], plan["days"])
+            exp_str = expires.strftime("%Y-%m-%d") if expires else "نامشخص"
+            _bot.send_message(
+                pending["chat_id"],
+                f"💠 <b>پرداخت با TON موفق بود!</b>\n\n"
+                f"✅ اشتراک <b>{plan['fa']}</b> فعال شد\n"
+                f"📅 انقضا: <b>{exp_str}</b>"
+            )
+        except Exception as e:
+            print(f"❌ خطا در _finalize_ton_payment: {e}")
+
+    def _ton_poll_loop():
+        """هر چند ثانیه یک‌بار، تراکنش‌های واردشده به کیف‌پولِ TON مالک رو از
+        toncenter.io می‌خونه و اگه مبلغِ دقیقِ یکی از فاکتورهای بازِ
+        _pending_ton_payments رو پیدا کرد، اشتراک رو خودکار فعال می‌کنه.
+        فاکتورهایی که بیشتر از TON_PAYMENT_TIMEOUT منتظر مونده باشن، حذف
+        می‌شن (منقضی)."""
+        api_key = getattr(config, "TONCENTER_API_KEY", "")
+        while True:
+            try:
+                if TON_WALLET_ADDRESS and _pending_ton_payments:
+                    params = {"address": TON_WALLET_ADDRESS, "limit": 30, "archival": "false"}
+                    if api_key:
+                        params["api_key"] = api_key
+                    resp = requests.get("https://toncenter.com/api/v2/getTransactions", params=params, timeout=15)
+                    data = resp.json()
+                    if data.get("ok"):
+                        for tx in data.get("result", []):
+                            tx_hash = (tx.get("transaction_id") or {}).get("hash")
+                            if not tx_hash or tx_hash in _seen_ton_tx_hashes:
+                                continue
+                            _seen_ton_tx_hashes.add(tx_hash)
+                            in_msg = tx.get("in_msg") or {}
+                            try:
+                                value_nano = int(in_msg.get("value") or 0)
+                            except (TypeError, ValueError):
+                                continue
+                            if value_nano <= 0:
+                                continue
+                            value_ton = value_nano / 1_000_000_000
+                            amount_key = f"{value_ton:.9f}"
+                            pending = _pending_ton_payments.pop(amount_key, None)
+                            if pending:
+                                print(f"💠 تراکنشِ TON مچ شد: {value_ton:.9f} TON — payment_id={pending['payment_id']}")
+                                _finalize_ton_payment(pending, tx_hash)
+                    else:
+                        print(f"⚠️ toncenter پاسخِ نامعتبر داد: {data}")
+
+                # ── حذفِ فاکتورهای منقضی‌شده (بیش از ۳۰ دقیقه بدون پرداخت) ──
+                now = time.time()
+                expired_keys = [k for k, v in _pending_ton_payments.items() if v["expires_ts"] < now]
+                for k in expired_keys:
+                    v = _pending_ton_payments.pop(k, None)
+                    if v:
+                        try:
+                            db.update_payment(v["payment_id"], status="expired")
+                            _bot.send_message(v["chat_id"], "⏳ فاکتورِ پرداختِ TON منقضی شد. برای تلاشِ دوباره، از «🛒 خرید» اقدام کن.")
+                        except Exception:
+                            pass
+            except Exception as e:
+                print(f"❌ خطا در _ton_poll_loop: {e}")
+            time.sleep(TON_POLL_SECONDS)
+
+    if TON_WALLET_ADDRESS:
+        threading.Thread(target=_ton_poll_loop, daemon=True).start()
 
     # ── دریافت پیام‌های مرتبط با خرید (مبلغ الماس + رسید) ───────────────────
     @_bot.message_handler(
@@ -4250,6 +4622,31 @@ def start_token_bot():
                 markup.add(types.InlineKeyboardButton("❌ لغو", callback_data="admin_purchase_settings", style="danger"))
                 _bot.edit_message_text(
                     f"💵 نرخِ جدیدِ هر الماس رو به تومان بنویس (فقط عدد):\nنرخِ فعلی: {DIAMOND_RATE} تومان\nمثال: <code>60</code>",
+                    chat_id=call.message.chat.id, message_id=call.message.message_id,
+                    reply_markup=markup
+                )
+                _bot.answer_callback_query(call.id)
+                return
+
+            elif data == "aps_ton_rate":
+                _owner_states[uid] = {"state": "aps_ton_rate"}
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("❌ لغو", callback_data="admin_purchase_settings", style="danger"))
+                _bot.edit_message_text(
+                    f"💠 نرخِ جدیدِ هر TON رو به تومان بنویس (فقط عدد):\nنرخِ فعلی: {TON_TOMAN_RATE:,} تومان\nمثال: <code>248196</code>",
+                    chat_id=call.message.chat.id, message_id=call.message.message_id,
+                    reply_markup=markup
+                )
+                _bot.answer_callback_query(call.id)
+                return
+
+            elif data == "aps_ton_wallet":
+                _owner_states[uid] = {"state": "aps_ton_wallet"}
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("❌ لغو", callback_data="admin_purchase_settings", style="danger"))
+                _bot.edit_message_text(
+                    f"👛 آدرسِ جدیدِ کیف‌پولِ TON رو بفرست:\nآدرسِ فعلی: <code>{TON_WALLET_ADDRESS or 'تنظیم‌نشده'}</code>\n"
+                    f"مثال: <code>UQC9owZEEMg35RCUA_kHFkgxQyxXvPQsqrQ0vBSBZZ4p0vyv</code>",
                     chat_id=call.message.chat.id, message_id=call.message.message_id,
                     reply_markup=markup
                 )
@@ -5654,6 +6051,40 @@ def start_token_bot():
                 markup = types.InlineKeyboardMarkup()
                 markup.add(types.InlineKeyboardButton("🔙 بازگشت به تنظیمات خرید", callback_data="admin_purchase_settings", style="primary"))
                 _bot.reply_to(message, f"✅ نرخِ هر الماس به {new_rate:,} تومان تغییر کرد.", reply_markup=markup)
+                return
+
+            # ── تنظیم مشخصات خرید: تغییر نرخِ هر TON ────────────────────────────
+            if state == "aps_ton_rate":
+                try:
+                    new_rate = int(text.replace(",", "").replace("،", ""))
+                    if new_rate <= 0:
+                        raise ValueError
+                except ValueError:
+                    return _bot.reply_to(message, "❌ لطفاً یک عدد صحیح و مثبت وارد کنید (تومان).")
+                _owner_states.pop(message.from_user.id, None)
+                nonlocal TON_TOMAN_RATE
+                TON_TOMAN_RATE = new_rate
+                _save_ton_rate_setting(new_rate)
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("🔙 بازگشت به تنظیمات خرید", callback_data="admin_purchase_settings", style="primary"))
+                _bot.reply_to(message, f"✅ نرخِ هر TON به {new_rate:,} تومان تغییر کرد.", reply_markup=markup)
+                return
+
+            # ── تنظیم مشخصات خرید: تغییر آدرسِ کیف‌پولِ TON ──────────────────────
+            if state == "aps_ton_wallet":
+                new_addr = text.strip()
+                if len(new_addr) < 20 or " " in new_addr:
+                    return _bot.reply_to(message, "❌ این یک آدرسِ معتبرِ TON به‌نظر نمی‌رسه. دوباره بفرست:")
+                _owner_states.pop(message.from_user.id, None)
+                nonlocal TON_WALLET_ADDRESS
+                TON_WALLET_ADDRESS = new_addr
+                try:
+                    db.set_global_setting("ton_wallet_address", new_addr)
+                except Exception as e:
+                    print(f"⚠️ خطا در ذخیره‌ی ton_wallet_address: {e}")
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("🔙 بازگشت به تنظیمات خرید", callback_data="admin_purchase_settings", style="primary"))
+                _bot.reply_to(message, f"✅ آدرسِ کیف‌پولِ TON به‌روزرسانی شد:\n<code>{new_addr}</code>", reply_markup=markup)
                 return
 
             # ── ساختِ کدِ تخفیف: مرحله ۱ (متنِ کد) ───────────────────────────────
