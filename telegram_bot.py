@@ -13,6 +13,7 @@ import datetime
 import random
 import re
 import emoji as EM
+import wallet_bot
 from telethon.tl.custom import Button as _TLButton  # فقط برای پنل دکمه‌ای بات کمکی (helper_bot.py، مبتنی بر Telethon)
 
 # ─── وقت تهران ───────────────────────────────────────────────────────────────
@@ -3927,16 +3928,40 @@ def start_token_bot():
                 if not plan:
                     return _bot.answer_callback_query(call.id, "❌ پلن نامعتبر", show_alert=True)
                 stars = _stars_for_toman(plan["toman"])
+                payload = f"sub_stars_{plan_key}_{tg_id}"
                 try:
-                    _bot.send_invoice(
-                        chat_id=call.message.chat.id,
-                        title=f"اشتراک {plan['fa']}",
-                        description=f"فعال‌سازیِ اشتراک {plan['fa']} ({plan['days']} روز) با استارزِ تلگرام",
-                        invoice_payload=f"sub_stars_{plan_key}_{tg_id}",
-                        provider_token="",           # پرداخت با Stars نیاز به provider_token نداره
-                        currency="XTR",               # ارزِ استارزِ تلگرام
-                        prices=[types.LabeledPrice(label=f"اشتراک {plan['fa']}", amount=stars)],
-                    )
+                    if wallet_bot.is_enabled():
+                        # فاکتور رو رباتِ کیف‌پولی می‌سازه (استارزها می‌ره تو
+                        # موجودیِ اون)، ولی خودِ رباتِ مدیریت لینکش رو برای
+                        # کاربر می‌فرسته.
+                        link = wallet_bot.create_stars_invoice_link(
+                            title=f"اشتراک {plan['fa']}",
+                            description=f"فعال‌سازیِ اشتراک {plan['fa']} ({plan['days']} روز) با استارزِ تلگرام",
+                            payload=payload,
+                            stars_amount=stars,
+                        )
+                        if not link:
+                            return _bot.answer_callback_query(call.id, "❌ خطا در ساختِ فاکتورِ پرداخت. دوباره تلاش کن.", show_alert=True)
+                        markup = types.InlineKeyboardMarkup()
+                        markup.add(types.InlineKeyboardButton(f"⭐ پرداختِ {stars} استار", url=link, style="primary"))
+                        _bot.send_message(
+                            call.message.chat.id,
+                            f"{EM.EMOJI_STAR_1} <b>پرداختِ اشتراک {plan['fa']}</b>\n\n"
+                            f"برای پرداختِ <b>{stars} استار</b> روی دکمه‌ی زیر بزن:",
+                            reply_markup=markup,
+                        )
+                    else:
+                        # اگه ربات کیف‌پولی تنظیم نشده، مثلِ قبل خودِ رباتِ
+                        # مدیریت فاکتور رو مستقیم می‌فرسته.
+                        _bot.send_invoice(
+                            chat_id=call.message.chat.id,
+                            title=f"اشتراک {plan['fa']}",
+                            description=f"فعال‌سازیِ اشتراک {plan['fa']} ({plan['days']} روز) با استارزِ تلگرام",
+                            invoice_payload=payload,
+                            provider_token="",
+                            currency="XTR",
+                            prices=[types.LabeledPrice(label=f"اشتراک {plan['fa']}", amount=stars)],
+                        )
                     _bot.answer_callback_query(call.id)
                 except Exception as e:
                     print(f"❌ خطا در ارسالِ فاکتورِ استارز: {e}")
@@ -4145,12 +4170,13 @@ def start_token_bot():
             print(f"❌ خطا در pre_checkout_query استارز: {e}")
 
     # ── پرداخت با استارز: تکمیلِ موفق ─────────────────────────────────────────
-    @_bot.message_handler(content_types=["successful_payment"], chat_types=["private"])
-    def _handle_stars_successful_payment(message):
+    # این تابع مشترک، هم از هندلرِ successful_payment خودِ رباتِ مدیریت
+    # (وقتی رباتِ کیف‌پولی تنظیم نشده) صدا زده می‌شه، هم به‌عنوان کال‌بک به
+    # wallet_bot داده می‌شه تا وقتی پرداخت از طریقِ رباتِ کیف‌پولی انجام شد،
+    # اشتراکِ کاربر همینجا (رباتِ مدیریت) فعال و پیامِ تأیید ارسال بشه.
+    def _finalize_stars_payment(tg_id, payload, stars_amount):
         try:
-            sp = message.successful_payment
-            payload = sp.invoice_payload or ""
-            parts = payload.split("_")
+            parts = (payload or "").split("_")
             # فرمتِ payload: sub_stars_{plan_key}_{tg_id}
             if len(parts) < 4 or parts[0] != "sub" or parts[1] != "stars":
                 print(f"⚠️ payload نامعتبر برای پرداختِ استارز: {payload!r}")
@@ -4161,7 +4187,6 @@ def start_token_bot():
                 print(f"⚠️ پلنِ نامعتبر در payload استارز: {plan_key!r}")
                 return
 
-            tg_id = message.from_user.id
             account = db.get_account_by_tg_id(tg_id)
             if not account:
                 print(f"⚠️ اکانتی برایِ tg_id={tg_id} در پرداختِ استارز پیدا نشد.")
@@ -4181,14 +4206,27 @@ def start_token_bot():
             exp_str = expires.strftime("%Y-%m-%d") if expires else "نامشخص"
 
             _bot.send_message(
-                message.chat.id,
+                tg_id,
                 f"{EM.EMOJI_STAR_1} <b>پرداخت با استارز موفق بود!</b>\n\n"
                 f"✅ اشتراک <b>{plan['fa']}</b> فعال شد\n"
-                f"⭐ {sp.total_amount} استار پرداخت شد\n"
+                f"⭐ {stars_amount} استار پرداخت شد\n"
                 f"📅 انقضا: <b>{exp_str}</b>"
             )
         except Exception as e:
-            print(f"❌ خطا در successful_payment استارز: {e}")
+            print(f"❌ خطا در پردازشِ پرداختِ استارز: {e}")
+
+    # اگه رباتِ کیف‌پولی تنظیم شده، پرداخت‌ها اونجا اتفاق می‌افتن و از طریقِ
+    # این کال‌بک به رباتِ مدیریت خبر داده می‌شه.
+    wallet_bot.set_payment_callback(
+        lambda tg_id, payload, stars_amount: _finalize_stars_payment(tg_id, payload, stars_amount)
+    )
+
+    @_bot.message_handler(content_types=["successful_payment"], chat_types=["private"])
+    def _handle_stars_successful_payment(message):
+        # این مسیر فقط وقتی اجرا می‌شه که رباتِ کیف‌پولی تنظیم نشده باشه و
+        # خودِ رباتِ مدیریت مستقیماً فاکتور فرستاده باشه (send_invoice قدیمی).
+        sp = message.successful_payment
+        _finalize_stars_payment(message.from_user.id, sp.invoice_payload or "", sp.total_amount)
 
     # ── پرداخت با TON: چکِ دوره‌ایِ بلاک‌چین (پول‌کردنِ فاکتورهای باز) ────────
     def _finalize_ton_payment(pending: dict, tx_hash: str):

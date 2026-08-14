@@ -10,6 +10,9 @@ API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 # ربات کمکی پنل دکمه‌ای سلف (اختیاری - اگر خالی باشد پنل دکمه‌ای غیرفعال می‌ماند)
 HELPER_BOT_TOKEN = os.environ.get("HELPER_BOT_TOKEN", "")
+# ربات کیف‌پولی — فقط برای ساختنِ فاکتورِ استارز و دریافتِ موجودیِ استارز
+# (اختیاری - اگر خالی باشد، فاکتورِ استارز مثلِ قبل از طریقِ ربات مدیریت ساخته می‌شود)
+WALLET_BOT_TOKEN = os.environ.get("WALLET_BOT_TOKEN", "")
 
 # ─── سرور ──────────────────────────────────────────────────────────────────
 SECRET_KEY = os.environ.get("SECRET_KEY", "nexoself_secret_key_change_me")

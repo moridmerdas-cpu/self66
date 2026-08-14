@@ -784,6 +784,8 @@ if __name__ == "__main__":
     
     # ۳. استارت ربات توکن
     from telegram_bot import start_token_bot
+    from wallet_bot import start_wallet_bot
+    start_wallet_bot()   # باید قبل از start_token_bot بالا بیاد تا کال‌بکِ پرداخت رجیستر بشه
     start_token_bot()
     
     # ۴. استارت بات برای همه کاربران لاگین‌شده
