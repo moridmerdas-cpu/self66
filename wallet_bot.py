@@ -63,7 +63,7 @@ def create_stars_invoice_link(title: str, description: str, payload: str, stars_
         return _wallet_bot.create_invoice_link(
             title=title,
             description=description,
-            invoice_payload=payload,
+            payload=payload,
             provider_token="",   # پرداخت با Stars نیاز به provider_token نداره
             currency="XTR",
             prices=[types.LabeledPrice(label=title, amount=stars_amount)],
