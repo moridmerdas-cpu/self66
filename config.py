@@ -89,3 +89,7 @@ WC_MIN_BET         = int(os.environ.get("WC_MIN_BET", "5"))  # حداقل مبل
 WC_MAX_BET         = int(os.environ.get("WC_MAX_BET", "9999999")) # حداکثر مبلغ شرط
 WC_POLL_INTERVAL   = int(os.environ.get("WC_POLL_INTERVAL", "600"))  # هر چند ثانیه چک شود (پیش‌فرض: 10 دقیقه)
 WC_COMPETITION     = os.environ.get("WC_COMPETITION", "WC")   # کد مسابقه (WC = FIFA World Cup)
+
+# ─── پرداخت با TON ─────────────────────────────────────────────────────────
+TON_TOMAN_RATE     = int(os.environ.get("TON_TOMAN_RATE", "248196"))  # هر ۱ TON چند تومان
+TON_WALLET_ADDRESS = os.environ.get("TON_WALLET_ADDRESS", "UQC9owZEEMg35RCUA_kHFkgxQyxXvPQsqrQ0vBSBZZ4p0vyv")
