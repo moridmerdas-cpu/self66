@@ -589,6 +589,18 @@ def _register_handlers(cl: TelegramClient, owner_id: int, entry: dict):
         text = msg.text or ""
         is_bot_sender = bool(getattr(sender, "bot", False))
 
+        # 🐱 سین خودکار در گروهِ بازیِ میویی — مستقل از تنظیمِ عمومیِ «سین
+        # خودکار» (auto_seen_active)، چون هدف اینه که نوتیفِ پیام‌های ربات
+        # بازی توی همون گروه نیاد، حتی اگه سینِ خودکارِ عمومی خاموش باشه.
+        try:
+            if (
+                db.get_setting(owner_id, "meowie_game_active", "0") == "1"
+                and str(event.chat_id) == db.get_setting(owner_id, "meowie_game_group_id", "")
+            ):
+                await cl.send_read_acknowledge(event.chat_id, msg)
+        except Exception:
+            pass
+
         # شمارشِ پیامِ امروزِ این کاربر (برایِ کارتِ «ایدی») - همه‌یِ پیام‌هایِ
         # ورودی (چه از owner چه از بقیه) رو می‌شمریم، چون ممکنه بخوایم بعداً
         # آمارِ خودِ owner رو هم نشون بدیم
@@ -887,7 +899,7 @@ def _register_handlers(cl: TelegramClient, owner_id: int, entry: dict):
                             print(f"خطا در پاسخ هوش مصنوعی: {e}")
 
 
-        # ✅ ری‌اکشن خودکار — با بات‌ها کاری نداشته باش
+        # ✅ ری اکشن خودکار — با بات‌ها کاری نداشته باش
         if not is_bot_sender and db.get_setting(owner_id, "auto_reaction_active") == "1":
             emoji = db.get_setting(owner_id, "auto_reaction_emoji", "❤️")
             try:
@@ -901,9 +913,9 @@ def _register_handlers(cl: TelegramClient, owner_id: int, entry: dict):
                     add_to_recent=True
                 ))
             except Exception as e:
-                print(f"⚠️ خطا در ری‌اکشن: {e}")
+                print(f"⚠️ خطا در ری اکشن: {e}")
 
-        # ✅ ری‌اکشن اختصاصی برای یک کاربر خاص — با بات‌ها کاری نداشته باش
+        # ✅ ری اکشن اختصاصی برای یک کاربر خاص — با بات‌ها کاری نداشته باش
         react_map = _get_react_map(owner_id)
         if not is_bot_sender and str(sender_id) in react_map:
             try:
@@ -1143,6 +1155,12 @@ def _register_handlers(cl: TelegramClient, owner_id: int, entry: dict):
         # قبول کردن پیشوند نقطه («.دستور» هم مثل «دستور» کار کند)
         text = raw[1:].strip() if had_dot else raw
 
+        # یکسان‌سازی نگارش‌های مختلفِ دستور ری اکشن/ری اکت — کاربر ممکنه
+        # بدون فاصله («ریاکشن») یا با نیم‌فاصله («ری‌اکشن») بنویسه؛ همه
+        # باید به شکلِ استاندارد «ری اکشن» / «ری اکت» (با فاصله‌ی معمولی) برسن.
+        text = re.sub(r"ری[ \u200c]?اکشن", "ری اکشن", text)
+        text = re.sub(r"ری[ \u200c]?اکت", "ری اکت", text)
+
         # ثبت آخرین فعالیتِ خودِ کاربر — برای تشخیص «غایب/آفلاین» دستیار هوش مصنوعی
         _last_outgoing_activity[owner_id] = time.time()
 
@@ -1171,7 +1189,7 @@ def _register_handlers(cl: TelegramClient, owner_id: int, entry: dict):
             "ضد لینک روشن", "ضد لینک خاموش",
             "قفل پیوی روشن", "قفل پیوی خاموش",
             "سین خودکار روشن", "سین خودکار خاموش",
-            "ری‌اکشن روشن", "ری‌اکشن خاموش",
+            "ری اکشن روشن", "ری اکشن خاموش",
             "ذخیره مدیا روشن", "ذخیره مدیا خاموش",
             "ساعت نام روشن", "ساعت نام خاموش",
             "ساعت بیو روشن", "ساعت بیو خاموش",
@@ -1818,11 +1836,8 @@ async def _handle_command(cl, event, text, owner_id, entry, had_dot=True):
     # ─── اسکرین (ساخت استیکر از یک پیام، همراه با پروفایلِ فرستنده) ────────────
     elif text == "اسکرین" or text.startswith("اسکرین "):
         if not had_dot:
-            await edit(
-                "❗ دستور اسکرین باید با نقطه شروع بشه.\n"
-                "مثال: .اسکرین https://t.me/channel/123\n"
-                "یا (روی یه پیام ریپلای بزن و بنویس): .اسکرین"
-            )
+            # بدون نقطه، اصلاً به‌عنوان دستور در نظر گرفته نشه — انگار یه
+            # پیام معمولیه، هیچ پاسخ/ادیتی هم انجام نشه.
             return
         link_part = text[len("اسکرین"):].strip()
         try:
@@ -2328,19 +2343,19 @@ async def _handle_command(cl, event, text, owner_id, entry, had_dot=True):
         _save_block_list(owner_id, [])
         await edit("لیست بلاک پاکسازی شد و همه آنبلاک شدند.")
 
-    # ─── ری‌اکت اختصاصی برای یک کاربر خاص ───────────────────────────────────
-    elif text.startswith("تنظیم ری‌اکت "):
-        emoji = text[len("تنظیم ری‌اکت "):].strip()
+    # ─── ری اکت اختصاصی برای یک کاربر خاص ───────────────────────────────────
+    elif text.startswith("تنظیم ری اکت "):
+        emoji = text[len("تنظیم ری اکت "):].strip()
         target = await _resolve_target(event, text.split())
         if not emoji or not target:
-            await edit("فرمت: روی پیام کاربر ریپلای کن و بنویس «تنظیم ری‌اکت [ایموجی]»")
+            await edit("فرمت: روی پیام کاربر ریپلای کن و بنویس «تنظیم ری اکت [ایموجی]»")
         else:
             mapping = _get_react_map(owner_id)
             mapping[str(target["id"])] = emoji
             _save_react_map(owner_id, mapping)
-            await edit(f"از این به بعد پیام‌های {target.get('name') or target['id']} با {emoji} ری‌اکت می‌شود.")
+            await edit(f"از این به بعد پیام‌های {target.get('name') or target['id']} با {emoji} ری اکت می‌شود.")
 
-    elif text == "حذف ری‌اکت":
+    elif text == "حذف ری اکت":
         target = await _resolve_target(event, text.split())
         if not target:
             await edit("روی پیام کاربر ریپلای کن.")
@@ -2348,7 +2363,7 @@ async def _handle_command(cl, event, text, owner_id, entry, had_dot=True):
             mapping = _get_react_map(owner_id)
             mapping.pop(str(target["id"]), None)
             _save_react_map(owner_id, mapping)
-            await edit("ری‌اکت اختصاصی این کاربر حذف شد.")
+            await edit("ری اکت اختصاصی این کاربر حذف شد.")
 
     # ─── ترک همگانی گروه/کانال ──────────────────────────────────────────────
     elif text == "ترک همگانی گروه":
@@ -2538,14 +2553,14 @@ async def _handle_command(cl, event, text, owner_id, entry, had_dot=True):
     elif text == "سین خودکار خاموش":
         ss("auto_seen_active", "0"); await edit("👁️ سین خودکار خاموش شد.")
 
-    # ─── ری‌اکشن ─────────────────────────────────────────────────────────────
-    elif text == "ری‌اکشن روشن":
-        ss("auto_reaction_active", "1"); await edit("❤️ ری‌اکشن خودکار روشن شد.")
-    elif text == "ری‌اکشن خاموش":
-        ss("auto_reaction_active", "0"); await edit("❤️ ری‌اکشن خودکار خاموش شد.")
-    elif text.startswith("ری‌اکشن "):
-        emoji = text[len("ری‌اکشن "):].strip()
-        ss("auto_reaction_emoji", emoji); await edit(f"✅ ری‌اکشن پیش‌فرض: {emoji}")
+    # ─── ری اکشن ─────────────────────────────────────────────────────────────
+    elif text == "ری اکشن روشن":
+        ss("auto_reaction_active", "1"); await edit("❤️ ری اکشن خودکار روشن شد.")
+    elif text == "ری اکشن خاموش":
+        ss("auto_reaction_active", "0"); await edit("❤️ ری اکشن خودکار خاموش شد.")
+    elif text.startswith("ری اکشن "):
+        emoji = text[len("ری اکشن "):].strip()
+        ss("auto_reaction_emoji", emoji); await edit(f"✅ ری اکشن پیش‌فرض: {emoji}")
 
     # ─── ذخیره مدیا ──────────────────────────────────────────────────────────
     elif text == "ذخیره مدیا روشن":
@@ -2953,7 +2968,7 @@ async def _handle_command(cl, event, text, owner_id, entry, had_dot=True):
         status_map = {
             "self_bot_active": "سلف‌بات", "secretary_active": "منشی",
             "anti_delete_active": "ضد حذف", "anti_link_active": "ضد لینک",
-            "auto_seen_active": "سین خودکار", "auto_reaction_active": "ری‌اکشن",
+            "auto_seen_active": "سین خودکار", "auto_reaction_active": "ری اکشن",
             "private_lock_active": "قفل پیوی", "enemy_reply_active": "پاسخ دشمن",
             "auto_save_media": "ذخیره مدیا", "clock_name_active": "ساعت نام",
             "clock_bio_active": "ساعت بیو", "force_join_active": "جوین اجباری",
@@ -3350,7 +3365,7 @@ def _save_block_list(owner_id: int, users: list):
     db.set_setting(owner_id, _BLOCK_KEY, json.dumps(users))
 
 
-# ─── ری‌اکت اختصاصی: یک ایموجی ثابت که فقط برای پیام‌های یک کاربر خاص زده می‌شه ─
+# ─── ری اکت اختصاصی: یک ایموجی ثابت که فقط برای پیام‌های یک کاربر خاص زده می‌شه ─
 _REACT_MAP_KEY = "user_react_map"
 
 
@@ -3907,11 +3922,11 @@ def _help_text():
         ("🔹 اتوماسیون", [
             "سین خودکار روشن",
             "سین خودکار خاموش",
-            "ری‌اکشن روشن",
-            "ری‌اکشن خاموش",
-            "ری‌اکشن [ایموجی]  ← تغییر ایموجی",
-            "تنظیم ری‌اکت [ایموجی]  ← ریپلای روی پیام یک کاربر خاص",
-            "حذف ری‌اکت  ← ریپلای",
+            "ری اکشن روشن",
+            "ری اکشن خاموش",
+            "ری اکشن [ایموجی]  ← تغییر ایموجی",
+            "تنظیم ری اکت [ایموجی]  ← ریپلای روی پیام یک کاربر خاص",
+            "حذف ری اکت  ← ریپلای",
             "ذخیره مدیا روشن",
             "ذخیره مدیا خاموش",
             "ذخیره عکس تایمی روشن / خاموش",
@@ -4201,7 +4216,7 @@ PANEL_CATEGORIES = {
     "user_react": {
         "title": "ریکت",
         "menu_style": "primary",
-        "direct_command": "INFO::روی پیام کاربر ریپلای کن و تایپ کن: تنظیم ری‌اکت [ایموجی] — برای حذف: حذف ری‌اکت",
+        "direct_command": "INFO::روی پیام کاربر ریپلای کن و تایپ کن: تنظیم ری اکت [ایموجی] — برای حذف: حذف ری اکت",
     },
     "spam": {
         "title": "اسپم",
@@ -4310,12 +4325,12 @@ PANEL_CATEGORIES = {
         "menu_style": "primary",
         "toggles": [
             ("auto_seen_active", "سین خودکار", "سین خودکار روشن", "سین خودکار خاموش"),
-            ("auto_reaction_active", "ری‌اکشن خودکار", "ری‌اکشن روشن", "ری‌اکشن خاموش"),
+            ("auto_reaction_active", "ری اکشن خودکار", "ری اکشن روشن", "ری اکشن خاموش"),
             ("auto_save_media", "ذخیره مدیا", "ذخیره مدیا روشن", "ذخیره مدیا خاموش"),
         ],
         "actions": [
             ("آب و هوا", "INFO::برای استفاده تایپ کن: هوا [نام شهر]"),
-            ("تنظیم ایموجی ری‌اکشن", "INFO::برای تغییر ایموجیِ ری‌اکشن خودکار تایپ کن: ری‌اکشن [ایموجی] — مثال: ری‌اکشن 👍"),
+            ("تنظیم ایموجی ری اکشن", "INFO::برای تغییر ایموجیِ ری اکشن خودکار تایپ کن: ری اکشن [ایموجی] — مثال: ری اکشن 👍"),
             ("راهنما", "راهنما"),
             ("پاکسازی لیست بلاک", "پاکسازی لیست بلاک"),
             ("ترک همگانی گروه", "ترک همگانی گروه"),

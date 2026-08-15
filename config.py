@@ -87,6 +87,12 @@ FOOTBALL_API_KEY   = os.environ.get("FOOTBALL_API_KEY", "")   # کلید API ا�
 WC_CHANNEL_ID      = os.environ.get("WC_CHANNEL_ID", "")      # آیدی کانال (مثال: @mychannel یا -1001234567)
 WC_MIN_BET         = int(os.environ.get("WC_MIN_BET", "5"))  # حداقل مبلغ شرط
 WC_MAX_BET         = int(os.environ.get("WC_MAX_BET", "9999999")) # حداکثر مبلغ شرط
+
+# ── شرط‌بندی با ربات (کاربر در برابر خودِ ربات شرط می‌بندد) ──────────────
+BOT_BET_MIN         = int(os.environ.get("BOT_BET_MIN", "10"))        # حداقل مبلغ شرط با ربات
+BOT_BET_MAX         = int(os.environ.get("BOT_BET_MAX", "5000"))      # حداکثر مبلغ شرط با ربات
+BOT_BET_WIN_CHANCE  = float(os.environ.get("BOT_BET_WIN_CHANCE", "0.45"))  # احتمال بردِ کاربر (۰ تا ۱)
+BOT_BET_PAYOUT_MULT = float(os.environ.get("BOT_BET_PAYOUT_MULT", "2.0"))  # ضریب جایزه در صورت برد
 WC_POLL_INTERVAL   = int(os.environ.get("WC_POLL_INTERVAL", "600"))  # هر چند ثانیه چک شود (پیش‌فرض: 10 دقیقه)
 WC_COMPETITION     = os.environ.get("WC_COMPETITION", "WC")   # کد مسابقه (WC = FIFA World Cup)
 

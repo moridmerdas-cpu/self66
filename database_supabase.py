@@ -12,7 +12,7 @@ import redis_cache as rc
 # ─── اتصال به دیتابیس ──────────────────────────────────────────────────────────
 import threading
 _conn = None
-_conn_lock = threading.Lock()
+_conn_lock = threading.RLock()
 
 def get_conn():
     """دریافت اتصال به دیتابیس (thread-safe)"""
@@ -22,7 +22,7 @@ def get_conn():
         _conn.autocommit = True
     return _conn
 
-def execute_query(query: str, params: tuple = None, fetch_one: bool = False, fetch_all: bool = False):
+def execute_query(query: str, params: tuple = None, fetch_one: bool = False, fetch_all: bool = False, _retry: bool = True):
     """
     اجرای کوئری با مدیریت خودکار اتصال.
 
@@ -31,6 +31,13 @@ def execute_query(query: str, params: tuple = None, fetch_one: bool = False, fet
     اگه همزمان از چند Thread روی یک کانکشن کوئری زده شود؛ بدون قفل، ممکنه کانکشن
     به‌هم بریزه و باعث خطاهای عجیب/قطعی‌های موقتی برای کاربرهای دیگه بشه.
     به همین خاطر کل عملیات با یک Lock سراسری محافظت می‌شود.
+
+    ✅ ری‌ترای خودکار: Supabase/Postgres گاهی کانکشن‌های بی‌کار رو خودش قطع
+    می‌کنه (idle timeout). قبلاً همین باعث می‌شد اولین کوئری بعد از یه مدت
+    سکوت با «خطا در اتصال به دیتابیس» شکست بخوره (مثلاً موقعِ افزودنِ چنلِ
+    جوینِ اجباری)، چون کانکشنِ خراب فقط دور ریخته می‌شد ولی خودِ کوئری دوباره
+    اجرا نمی‌شد. حالا اگه کانکشن خراب باشه، یک‌بار با کانکشنِ تازه دوباره
+    امتحان می‌شه — تنها اگه اون تلاشِ دوم هم شکست بخوره خطا بالا می‌ره.
     """
     with _conn_lock:
         global _conn
@@ -56,6 +63,10 @@ def execute_query(query: str, params: tuple = None, fetch_one: bool = False, fet
             except Exception:
                 pass
             _conn = None
+            if _retry:
+                # کانکشن تازه رو همین‌جا امتحان کن، بدونِ اینکه خطا رو به
+                # صدا‌زننده برسونیم — اکثر قطعی‌های موقتی همینجا حل می‌شن
+                return execute_query(query, params, fetch_one=fetch_one, fetch_all=fetch_all, _retry=False)
             raise
         except Exception as e:
             print(f"❌ Database error: {e}")

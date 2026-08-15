@@ -147,6 +147,15 @@ def _remaining_str(dt) -> str:
 _bot = None
 BOT_USERNAME = None
 OWNER_TG_ID = 8540004957
+OWNER_IDS = [OWNER_TG_ID, 8296865861]   # مالکان مجاز — هر دو دسترسیِ کامل دارند
+
+
+def _is_owner(tg_id) -> bool:
+    """True اگه tg_id یکی از مالکانِ ربات باشه (پشتیبانیِ چند مالک)."""
+    try:
+        return int(tg_id) in OWNER_IDS
+    except (TypeError, ValueError):
+        return False
 
 # ─── پردازش ایموجی‌های پرمیوم در پیام «ارسال به کانال» ────────────────────────
 # الگو: متن[ایدی_عددی_ایموجی_پرمیوم]  → ایموجی پرمیوم جلوی متن قرار می‌گیرد
@@ -419,6 +428,42 @@ def start_token_bot():
 
     try:
         _bot = telebot.TeleBot(config.BOT_TOKEN, parse_mode="HTML", threaded=True, num_threads=8)
+
+        def _notify_owners_text(text, reply_markup=None):
+            """پیامِ متنی رو به همه‌ی مالکان (OWNER_IDS) می‌فرسته. اولین
+            پیامِ موفق برگردونده می‌شه (برای مواردی که message_id لازمه)."""
+            first_msg = None
+            for oid in OWNER_IDS:
+                try:
+                    msg = _bot.send_message(oid, text, reply_markup=reply_markup)
+                    if first_msg is None:
+                        first_msg = msg
+                except Exception as e:
+                    print(f"⚠️ ارسال پیام به مالک {oid} ناموفق: {e}")
+            return first_msg
+
+        def _notify_owners_photo(file_id, caption=None, reply_markup=None):
+            first_msg = None
+            for oid in OWNER_IDS:
+                try:
+                    msg = _bot.send_photo(oid, file_id, caption=caption, reply_markup=reply_markup)
+                    if first_msg is None:
+                        first_msg = msg
+                except Exception as e:
+                    print(f"⚠️ ارسال عکس به مالک {oid} ناموفق: {e}")
+            return first_msg
+
+        def _notify_owners_forward(from_chat_id, message_id):
+            first_msg = None
+            for oid in OWNER_IDS:
+                try:
+                    msg = _bot.forward_message(oid, from_chat_id, message_id)
+                    if first_msg is None:
+                        first_msg = msg
+                except Exception as e:
+                    print(f"⚠️ فوروارد به مالک {oid} ناموفق: {e}")
+            return first_msg
+
         me = _bot.get_me()
         BOT_USERNAME = me.username
         print(f"🤖 ربات الماس: @{BOT_USERNAME}")
@@ -517,6 +562,9 @@ def start_token_bot():
         markup.add(
             types.InlineKeyboardButton(" ماموریت‌ها", callback_data="menu_missions", style="primary", icon_custom_emoji_id=str(EM.ID_MISSION)),
             types.InlineKeyboardButton(" مدیریت سلف", callback_data="self_mgmt_open", style="primary", icon_custom_emoji_id=str(EM.ID_SELF_EDIT))
+        )
+        markup.add(
+            types.InlineKeyboardButton(" شرط بندی با ربات", callback_data="menu_bet_bot", style="danger", icon_custom_emoji_id=str(EM.ID_BET_ROBOT))
         )
         markup.add(
             types.InlineKeyboardButton(" راهنما", callback_data="guide_menu", style="success", icon_custom_emoji_id=str(EM.ID_GUIDE))
@@ -1124,6 +1172,7 @@ def start_token_bot():
     _wc_api_cache = {"matches": [], "results": {}, "last_fetch": 0, "last_result_fetch": 0}
     # وضعیت انتخاب تیم کاربران: tg_id -> {challenge_id, selected_option}
     _wc_pending_bet = {}
+    _bot_bet_pending = {}   # tg_id -> account_id، در انتظار وارد کردن مبلغ شرط با ربات
 
     IRAN_TZ = datetime.timezone(datetime.timedelta(hours=3, minutes=30))
 
@@ -2550,7 +2599,7 @@ def start_token_bot():
             cache.invalidate(f"account_{call.from_user.id}")
 
             # آپدیت keyboard پایین صفحه (دکمه حذف سلف همچنان نمایش داده می‌شود)
-            kb = _owner_keyboard() if call.from_user.id == OWNER_TG_ID else _user_keyboard()
+            kb = _owner_keyboard() if _is_owner(call.from_user.id) else _user_keyboard()
             try:
                 _bot.send_message(
                     call.message.chat.id,
@@ -2595,8 +2644,7 @@ def start_token_bot():
             types.InlineKeyboardButton("❌ رد", callback_data=f"start_reject_{tg_id}", style="danger"),
         )
         try:
-            _bot.send_message(
-                OWNER_TG_ID,
+            _notify_owners_text(
                 "🔔 <b>درخواست ورود جدید</b>\n\n"
                 f"👤 نام: {full_name or 'نامشخص'}\n"
                 f"🆔 آیدی: <code>{tg_id}</code>\n"
@@ -2610,7 +2658,7 @@ def start_token_bot():
     @_bot.callback_query_handler(func=lambda call: call.data.startswith("start_approve_") or call.data.startswith("start_reject_"))
     def callback_start_approval(call):
         try:
-            if call.from_user.id != OWNER_TG_ID and not db.is_sub_admin(call.from_user.id):
+            if not _is_owner(call.from_user.id) and not db.is_sub_admin(call.from_user.id):
                 _bot.answer_callback_query(call.id, "⛔️ شما اجازه انجام این کار را ندارید", show_alert=True)
                 return
 
@@ -2666,7 +2714,7 @@ def start_token_bot():
             # شده بودن) نیازی به تایید دوباره ندارن — even اگه بعد از ری‌استارت
             # سرور، جدول موقتِ start_approvals (که SQLite محلیه) خالی شده باشه.
             approval_required = db.get_global_setting("start_approval_required", "0") == "1"
-            if approval_required and tg_id != OWNER_TG_ID:
+            if approval_required and not _is_owner(tg_id):
                 already_has_account = False
                 try:
                     already_has_account = db.get_account_by_tg_id(tg_id) is not None
@@ -2690,6 +2738,10 @@ def start_token_bot():
 
             parts = message.text.strip().split()
             ref_code = parts[1] if len(parts) > 1 else None
+
+            if ref_code == "support":
+                _bot.send_message(message.chat.id, "🛟 <b>پشتیبانی</b>\n\nیکی از گزینه‌های زیر رو انتخاب کن:", reply_markup=_support_menu_markup())
+                return
 
             if ref_code and ref_code.startswith("ref_"):
                 try:
@@ -2790,7 +2842,7 @@ def start_token_bot():
                 sub_status = "❌ اشتراک ندارید"
 
             if message.chat.type == 'private':
-                kb_markup = _owner_keyboard() if tg_id == OWNER_TG_ID else _user_keyboard()
+                kb_markup = _owner_keyboard() if _is_owner(tg_id) else _user_keyboard()
             else:
                 kb_markup = None
 
@@ -2953,6 +3005,148 @@ def start_token_bot():
             _bot.send_message(chat_id, text, **kwargs)
         except Exception as e:
             print(f"❌ خطا در _do_daily: {e}")
+
+    # ── شرط‌بندی با ربات (کاربر مستقیم در برابر خودِ ربات شرط می‌بندد) ─────
+    @_bot.callback_query_handler(func=lambda call: call.data == "menu_bet_bot")
+    def callback_menu_bet_bot(call):
+        try:
+            if call.message.chat.type != 'private':
+                return
+            if not require_membership_callback(call):
+                return
+            account = _get_account_cached(call.from_user.id)
+            if not account:
+                return _bot.answer_callback_query(call.id, "⚠️ ابتدا در پنل وب ثبت‌نام کنید.", show_alert=True)
+
+            min_bet = getattr(config, "BOT_BET_MIN", 10)
+            max_bet = getattr(config, "BOT_BET_MAX", 5000)
+            win_chance = getattr(config, "BOT_BET_WIN_CHANCE", 0.45)
+            payout_mult = getattr(config, "BOT_BET_PAYOUT_MULT", 2.0)
+            balance = db.get_token_balance(account["id"])
+
+            _bot_bet_pending[call.from_user.id] = account["id"]
+
+            _bot.answer_callback_query(call.id)
+            _bot.send_message(
+                call.message.chat.id,
+                f"{EM.EMOJI_DIAMONDS} <b>شرط‌بندی با ربات</b>\n\n"
+                f"💰 موجودی شما: <b>{balance}</b> الماس\n"
+                f"🎲 احتمال برد: <b>{int(win_chance * 100)}٪</b>\n"
+                f"🏆 در صورت برد: <b>{payout_mult:g}×</b> مبلغ شرط\n"
+                f"💎 محدوده شرط: {min_bet:,} – {max_bet:,} الماس\n\n"
+                f"مبلغ شرط را ارسال کنید (فقط عدد):",
+                reply_markup=types.ForceReply(selective=True)
+            )
+        except Exception as e:
+            print(f"❌ خطا در callback_menu_bet_bot: {e}")
+
+    @_bot.message_handler(func=lambda m: m.chat.type == 'private' and m.from_user.id in _bot_bet_pending)
+    def cmd_bot_bet_amount(message):
+        tg_id = message.from_user.id
+        account_id = _bot_bet_pending.get(tg_id)
+        if account_id is None:
+            return
+
+        text = (message.text or "").strip()
+        try:
+            amount = int(text)
+        except ValueError:
+            return _bot.reply_to(message, "❌ مبلغ باید فقط عدد باشد. دوباره وارد کنید یا /cancel برای لغو.")
+
+        min_bet = getattr(config, "BOT_BET_MIN", 10)
+        max_bet = getattr(config, "BOT_BET_MAX", 5000)
+        win_chance = getattr(config, "BOT_BET_WIN_CHANCE", 0.45)
+        payout_mult = getattr(config, "BOT_BET_PAYOUT_MULT", 2.0)
+
+        if amount < min_bet or amount > max_bet:
+            return _bot.reply_to(message, f"❌ مبلغ باید بین {min_bet:,} و {max_bet:,} الماس باشد.")
+
+        balance = db.get_token_balance(account_id)
+        if balance < amount:
+            _bot_bet_pending.pop(tg_id, None)
+            return _bot.reply_to(message, f"❌ موجودی کافی ندارید!\nنیاز: {amount:,} الماس — موجودی: {balance:,} الماس")
+
+        # شرط قطعی است — ابتدا مبلغ کسر می‌شود (جلوگیری از race condition روی موجودی)
+        if not db.deduct_tokens(account_id, amount):
+            _bot_bet_pending.pop(tg_id, None)
+            return _bot.reply_to(message, "❌ خطا در ثبت شرط. دوباره تلاش کنید.")
+
+        _bot_bet_pending.pop(tg_id, None)
+        cache.invalidate(f"account_{tg_id}")
+
+        won = random.random() < win_chance
+        if won:
+            payout = int(round(amount * payout_mult))
+            db.add_tokens(account_id, payout)
+            new_balance = db.get_token_balance(account_id)
+            cache.invalidate(f"account_{tg_id}")
+            _bot.reply_to(
+                message,
+                f"🎉 <b>بردی!</b>\n\n"
+                f"💎 مبلغ شرط: <b>{amount:,} الماس</b>\n"
+                f"🏆 جایزه: <b>{payout:,} الماس</b>\n"
+                f"💰 موجودی جدید: <b>{new_balance:,} الماس</b>",
+                reply_markup=_main_inline_keyboard(_get_account_cached(tg_id))
+            )
+        else:
+            new_balance = db.get_token_balance(account_id)
+            _bot.reply_to(
+                message,
+                f"😔 <b>این بار نبردی.</b>\n\n"
+                f"💎 {amount:,} الماس از حسابت کسر شد.\n"
+                f"💰 موجودی جدید: <b>{new_balance:,} الماس</b>",
+                reply_markup=_main_inline_keyboard(_get_account_cached(tg_id))
+            )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 🧠 نکسو در گروه‌ها — پاسخ‌گویی هوش مصنوعی با فراخوانی «نکسو» (بدون نیاز به پی‌وی)
+    # مثال: «نکسو چجوری رباتم رو روشن کنم؟» یا «نکسو منو به پشتیبانی وصل کن»
+    # ══════════════════════════════════════════════════════════════════════════
+    _NEXO_TRIGGER_RE = re.compile(r"^\s*نکسو[\s،,:!؟]*(.*)$", re.IGNORECASE | re.DOTALL)
+    _NEXO_CONNECT_RE = re.compile(r"(وصل|ارتباط).{0,15}(پشتیبان)|پشتیبان.{0,15}(وصل|ارتباط)")
+
+    @_bot.message_handler(
+        func=lambda m: m.chat.type in ("group", "supergroup") and bool(m.text) and _NEXO_TRIGGER_RE.match(m.text.strip()),
+        content_types=["text"],
+    )
+    def handle_nexo_group_trigger(message):
+        try:
+            match = _NEXO_TRIGGER_RE.match(message.text.strip())
+            question = (match.group(1) or "").strip()
+
+            if not question:
+                return _bot.reply_to(
+                    message,
+                    "🧠 <b>نکسو</b>\n\nسوالت رو بعد از «نکسو» بنویس؛ مثلاً:\n«نکسو چجوری ربات رو روشن کنم؟»"
+                )
+
+            # ── درخواستِ اتصال مستقیم به پشتیبانیِ انسانی ────────────────────
+            if _NEXO_CONNECT_RE.search(question):
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton(
+                    "🛟 اتصال به پشتیبانی", url=f"https://t.me/{BOT_USERNAME}?start=support"
+                ))
+                return _bot.reply_to(
+                    message,
+                    f"🧠 <b>نکسو:</b> باشه {message.from_user.first_name or 'دوست عزیز'}، "
+                    f"روی دکمه‌ی زیر بزن تا توی پی‌وی به پشتیبانی وصل بشی 👇",
+                    reply_markup=markup,
+                )
+
+            # ── پاسخ عادی از منشیِ هوش مصنوعیِ پشتیبانی ──────────────────────
+            try:
+                _bot.send_chat_action(message.chat.id, "typing")
+            except Exception:
+                pass
+            answer = _get_support_ai_answer(question)
+            markup = types.InlineKeyboardMarkup()
+            if "پشتیبانی" in answer:
+                markup.add(types.InlineKeyboardButton(
+                    "🛟 اتصال به پشتیبانی", url=f"https://t.me/{BOT_USERNAME}?start=support"
+                ))
+            _bot.reply_to(message, f"🧠 <b>نکسو:</b>\n{answer}", reply_markup=(markup if markup.keyboard else None))
+        except Exception as e:
+            print(f"❌ خطا در handle_nexo_group_trigger: {e}")
 
     @_bot.message_handler(func=lambda m: m.text == "🔗 رفرال", chat_types=['private'])
     def cmd_referral(message):
@@ -3408,8 +3602,7 @@ def start_token_bot():
             sender_username = f"@{call.from_user.username}" if call.from_user.username else "ندارد"
             sender_name = call.from_user.first_name or "کاربر"
             try:
-                _bot.send_message(
-                    OWNER_TG_ID,
+                _notify_owners_text(
                     f"🔔 <b>هدایت از هوش مصنوعیِ پشتیبانی</b>\n\n"
                     f"👤 کاربر: {sender_name} ({sender_username}) — <code>{call.from_user.id}</code>\n"
                     f"💬 کاربر با مشکلِ زیر در حالِ چت با هوش مصنوعی بود و الان به شما هدایت شده:\n"
@@ -3451,7 +3644,7 @@ def start_token_bot():
 
     @_bot.callback_query_handler(func=lambda call: call.data.startswith("support_reply_"))
     def callback_support_reply(call):
-        if call.from_user.id != OWNER_TG_ID and not db.is_sub_admin(call.from_user.id):
+        if not _is_owner(call.from_user.id) and not db.is_sub_admin(call.from_user.id):
             return _bot.answer_callback_query(call.id, "⛔ فقط مالک/ادمین می‌تونه پاسخ بده.", show_alert=True)
         target_tg_id = int(call.data[len("support_reply_"):])
         _bot.answer_callback_query(call.id)
@@ -3495,8 +3688,7 @@ def start_token_bot():
         try:
             sender_username = f"@{call.from_user.username}" if call.from_user.username else "ندارد"
             sender_name = call.from_user.first_name or "کاربر"
-            _bot.send_message(
-                OWNER_TG_ID,
+            _notify_owners_text(
                 f"🌟 <b>امتیازِ جدید به پشتیبانی</b>\n\n"
                 f"👤 از طرف: {sender_name} ({sender_username}) — <code>{call.from_user.id}</code>\n"
                 f"⭐ امتیاز: <b>{score} از ۱۰</b>"
@@ -3524,8 +3716,7 @@ def start_token_bot():
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton(" پاسخ دادن", callback_data=f"support_reply_{tg_id}", style="primary", icon_custom_emoji_id=str(EM.ID_MESSAGE_ALL)))
             try:
-                _bot.send_message(
-                    OWNER_TG_ID,
+                _notify_owners_text(
                     f"📩 <b>پیام پشتیبانیِ جدید</b>\n\n"
                     f"👤 از طرف: {sender_name} ({sender_username})\n"
                     f"🆔 آیدی عددی: <code>{tg_id}</code>\n\n"
@@ -4083,7 +4274,7 @@ def start_token_bot():
 
             # ── تأیید/رد پرداخت توسط ادمین ─────────────────────────────────
             elif data.startswith("pur_approve_") or data.startswith("pur_reject_"):
-                if tg_id != OWNER_TG_ID:
+                if not _is_owner(tg_id):
                     return _bot.answer_callback_query(call.id, "❌ فقط مالک دسترسی دارد", show_alert=True)
                 action = "approve" if data.startswith("pur_approve_") else "reject"
                 payment_id = int(data.split("_")[2])
@@ -4421,12 +4612,13 @@ def start_token_bot():
                     types.InlineKeyboardButton("❌ رد", callback_data=f"pur_reject_{payment_id}", style="danger", icon_custom_emoji_id="5832353674281620438")
                 )
                 try:
-                    admin_msg = _bot.send_photo(
-                        OWNER_TG_ID, file_id,
+                    admin_msg = _notify_owners_photo(
+                        file_id,
                         caption=admin_text,
                         reply_markup=admin_markup
                     )
-                    db.update_payment(payment_id, admin_msg_id=admin_msg.message_id)
+                    if admin_msg is not None:
+                        db.update_payment(payment_id, admin_msg_id=admin_msg.message_id)
                 except Exception as e:
                     print(f"❌ ارسال رسید به ادمین: {e}")
 
@@ -4445,7 +4637,7 @@ def start_token_bot():
     # ══════════════════════════════════════════════════════════════════════════
     @_bot.message_handler(func=lambda m: m.text == "مدیریت", chat_types=['private'])
     def cmd_admin_panel(message):
-        if message.from_user.id != OWNER_TG_ID:
+        if not _is_owner(message.from_user.id):
             return
         _bot.reply_to(message, 
             "📢 <b>پنل مدیریت مالک</b>\n\nیکی از گزینه‌های زیر را انتخاب کنید:",
@@ -4553,7 +4745,7 @@ def start_token_bot():
         uid = call.from_user.id
         data = call.data
 
-        if uid != OWNER_TG_ID:
+        if not _is_owner(uid):
             # ادمین فرعی: فقط admin_panel و دسترسی‌های مجاز
             if not db.is_sub_admin(uid):
                 return _bot.answer_callback_query(call.id, "❌ دسترسی ندارید", show_alert=True)
@@ -4590,7 +4782,7 @@ def start_token_bot():
                 return
 
             elif data == "admin_toggle_start_approval":
-                if uid != OWNER_TG_ID and not db.is_sub_admin(uid):
+                if not _is_owner(uid) and not db.is_sub_admin(uid):
                     return _bot.answer_callback_query(call.id, "⛔ فقط مالک/ادمین دسترسی داره.", show_alert=True)
                 current = db.get_global_setting("start_approval_required", "0") == "1"
                 new_val = "0" if current else "1"
@@ -5924,7 +6116,7 @@ def start_token_bot():
     # ══════════════════════════════════════════════════════════════════════════
     @_bot.callback_query_handler(func=lambda call: call.data.startswith("mu_"))
     def callback_manage_user(call):
-        if call.from_user.id != OWNER_TG_ID and not db.is_sub_admin(call.from_user.id):
+        if not _is_owner(call.from_user.id) and not db.is_sub_admin(call.from_user.id):
             return _bot.answer_callback_query(call.id, "❌ دسترسی ندارید", show_alert=True)
         try:
             parts = call.data.split("_", 2)
@@ -6010,7 +6202,7 @@ def start_token_bot():
     # ══════════════════════════════════════════════════════════════════════════
     # 📨 State handler
     # ══════════════════════════════════════════════════════════════════════════
-    @_bot.message_handler(func=lambda m: (m.from_user.id == OWNER_TG_ID or db.is_sub_admin(m.from_user.id)) and m.from_user.id in _owner_states, chat_types=['private'],
+    @_bot.message_handler(func=lambda m: (_is_owner(m.from_user.id) or db.is_sub_admin(m.from_user.id)) and m.from_user.id in _owner_states, chat_types=['private'],
                           content_types=["text", "photo", "document", "video"])
     def handle_owner_state(message):
         try:
@@ -6804,7 +6996,7 @@ def start_token_bot():
     # ══════════════════════════════════════════════════════════════════════════
     @_bot.message_handler(commands=["addchannel", "removechannel", "give", "users", "wc_create", "wc_winner", "transfer"])
     def cmd_text_commands(message):
-        if message.from_user.id != OWNER_TG_ID:
+        if not _is_owner(message.from_user.id):
             return
         _bot.reply_to(message, 
             "📢 تمام دستورات مدیریتی به پنل دکمه‌ای منتقل شدند.\n\n"
@@ -7413,7 +7605,7 @@ def start_token_bot():
             if not account:
                 return _bot.reply_to(message, "⚠️ ابتدا در پنل وب ثبت‌نام کنید.", reply_markup=_main_inline_keyboard())
             
-            kb = _owner_keyboard() if message.from_user.id == OWNER_TG_ID else _user_keyboard()
+            kb = _owner_keyboard() if _is_owner(message.from_user.id) else _user_keyboard()
             _bot.reply_to(message, "⚠️ دستور نامعتبر. از دکمه‌های زیر استفاده کنید:", reply_markup=kb)
         except Exception as e:
             print(f"❌ خطا در cmd_unknown: {e}")
