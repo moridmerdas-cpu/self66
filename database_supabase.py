@@ -296,12 +296,52 @@ def account_exists() -> bool:
         return False
 
 def save_telegram_user_id(owner_id: int, tg_user_id: int):
+    """
+    آیدی عددیِ تلگرام رو ذخیره می‌کنه و هم‌زمان رمزِ حسابِ کاربر رو خودکار
+    برابر با همون آیدیِ عددی می‌کنه (یعنی از الان به بعد، رمزِ ورودِ پنل/اپ
+    همیشه آیدی عددیِ تلگرامِ خودشه — نیازی به دخالت دستی نیست، چه برای
+    کاربرِ تازه ثبت‌نام‌کرده و چه برای کسی که قبلاً حساب داشته و الان دوباره
+    وارد تلگرامش می‌شه).
+    """
     try:
-        query = "UPDATE amel_accounts SET telegram_user_id = %s WHERE id = %s"
-        execute_query(query, (tg_user_id, owner_id))
-        print(f"✅ آیدی تلگرام {tg_user_id} برای کاربر {owner_id} ذخیره شد")
+        query = "UPDATE amel_accounts SET telegram_user_id = %s, password_hash = %s WHERE id = %s"
+        execute_query(query, (tg_user_id, _hash_pw(str(tg_user_id)), owner_id))
+        print(f"✅ آیدی تلگرام {tg_user_id} برای کاربر {owner_id} ذخیره شد و رمز با آیدی عددی همگام شد")
     except Exception as e:
         print(f"❌ save_telegram_user_id error: {e}")
+
+
+def sync_all_passwords_with_telegram_id() -> int:
+    """
+    یک‌بار موقع بالا اومدنِ برنامه، رمزِ همه‌ی حساب‌هایی که telegram_user_id
+    دارن رو با آیدیِ عددیشون همگام می‌کنه — هم برای کاربرانِ قدیمی که از
+    قبل توی دیتابیس بودن، هم برای هر کاربرِ جدیدی که این‌جا اضافه شده.
+    خروجی: تعداد ردیف‌هایی که آپدیت شدن.
+    """
+    try:
+        query = """
+            UPDATE amel_accounts
+            SET password_hash = %s
+            WHERE telegram_user_id = %s AND password_hash != %s
+        """
+        rows = execute_query(
+            "SELECT id, telegram_user_id FROM amel_accounts WHERE telegram_user_id IS NOT NULL",
+            fetch_all=True,
+        ) or []
+        updated = 0
+        for row in rows:
+            tg_id = row["telegram_user_id"]
+            new_hash = _hash_pw(str(tg_id))
+            execute_query(
+                "UPDATE amel_accounts SET password_hash = %s WHERE id = %s AND password_hash != %s",
+                (new_hash, row["id"], new_hash),
+            )
+            updated += 1
+        print(f"✅ همگام‌سازی رمزها با آیدیِ عددیِ تلگرام انجام شد ({updated} حساب بررسی شد)")
+        return updated
+    except Exception as e:
+        print(f"❌ sync_all_passwords_with_telegram_id error: {e}")
+        return 0
 
 def get_telegram_id_by_owner(owner_id: int) -> Optional[int]:
     try:
