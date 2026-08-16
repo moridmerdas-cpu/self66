@@ -25,11 +25,12 @@ def _u16len(s: str) -> int:
 
 from telethon.sessions import StringSession
 from telethon.tl.functions.account import UpdateProfileRequest
-from telethon.tl.functions.messages import GetCommonChatsRequest
+from telethon.tl.functions.messages import GetCommonChatsRequest, ReadMentionsRequest
 from telethon.errors import FloodWaitError
 import requests
 import database as db
 import config
+import support_ai
 from texts import ENEMY_REPLIES, FRIEND_REPLIES
 import meowie_game
 
@@ -92,14 +93,14 @@ _last_friend_reply = {}     # {sender_id: timestamp}
 SECRETARY_COOLDOWN = 86400  # 24 ساعت
 FRIEND_COOLDOWN = 3600      # 1 ساعت
 
-# ─── دستیار هوش مصنوعی (دیپ‌سیک) ──────────────────────────────────────────────
+# ─── دستیار هوش مصنوعی (Groq) ──────────────────────────────────────────────
 _last_ai_reply = {}  # {chat_id: timestamp} — کول‌داون پاسخ هوش مصنوعی
 _last_outgoing_activity = {}  # {owner_id: timestamp} — آخرین باری که خودِ کاربر پیام فرستاده
 AI_AWAY_SECONDS = 300  # اگه ۵ دقیقه از آخرین پیامِ خودِ کاربر گذشته باشه، "غایب" در نظر گرفته می‌شه
 AI_REPLY_COOLDOWN = 60  # حداقل فاصله بین دو پاسخ هوش مصنوعی در یک چت
 
 # حداکثر تعداد پیامی که هر کاربر (فرستنده) در روز می‌تونه از دستیارِ
-# هوش مصنوعیِ آموزش‌دیده (همون «دیپ سیک»/ai_assistant) جواب بگیره.
+# هوش مصنوعیِ آموزش‌دیده (همون «Groq»/ai_assistant) جواب بگیره.
 AI_ASSISTANT_DAILY_LIMIT = 10
 _AI_ASSISTANT_DAILY_PREFIX = "ai_assistant_daily_count"
 
@@ -422,6 +423,7 @@ class BotManager:
                 print(f"✅ [{owner_id}] بات راه‌اندازی شد — {me.first_name} (@{me.username})")
 
                 db.save_telegram_user_id(owner_id, me.id)
+                entry["tg_id"] = me.id  # ← برای تشخیصِ «آیا این اکانتِ پشتیبانیه؟» تو on_incoming
                 _last_outgoing_activity[owner_id] = time.time()
 
                 # ✅ تشخیص مالک - اصلاح شده با ۳ روش
@@ -478,9 +480,25 @@ class BotManager:
                 print(f"❌ [{owner_id}] خطا: {e}")
 
                 # ✅ اگه session توسط تلگرام باطل شده، نیاز به لاگین مجدد
-                if any(k in err_str for k in ("AUTH_KEY_UNREGISTERED", "SESSION_REVOKED",
-                                               "USER_DEACTIVATED", "UnauthorizedError")):
-                    print(f"❌ [{owner_id}] Session باطل شده — نیاز به لاگین مجدد")
+                # AuthKeyDuplicatedError یعنی همین سشن هم‌زمان از دو IP
+                # متفاوت استفاده شده (مثلاً دو نمونه از ربات با یک سشن) —
+                # تلگرام خودش کلید رو باطل می‌کنه. قبلاً این تشخیص داده
+                # نمی‌شد، پس کد به‌جای لاگین‌مجدد بی‌نهایت retry می‌کرد؛ چون
+                # سشن واقعاً باطله، cl.start() هر بار می‌رفت سراغِ پرامپتِ
+                # تعاملیِ «شماره تلفن»، تو محیطِ headless با EOF کرش می‌کرد،
+                # واچ‌داگ دوباره ری‌استارت می‌کرد — یه حلقه‌ی بی‌پایانِ کرش.
+                #
+                # پیامِ str(e) این خطا شاملِ نامِ کلاس نیست (فقط متنِ توضیح)،
+                # پس هم روی نوعِ خودِ Exception چک می‌کنیم هم روی چندتا
+                # کلیدواژه‌ی متنیِ رایج، تا مطمئن باشیم قاطی نمی‌شه.
+                is_auth_key_duplicated = type(e).__name__ == "AuthKeyDuplicatedError"
+                if any(k in err_str for k in (
+                    "AUTH_KEY_UNREGISTERED", "SESSION_REVOKED",
+                    "USER_DEACTIVATED", "UnauthorizedError",
+                    "AuthKeyDuplicatedError", "AUTH_KEY_DUPLICATED",
+                    "used under two different IP addresses",
+                )) or is_auth_key_duplicated:
+                    print(f"❌ [{owner_id}] Session باطل شده — نیاز به لاگین مجدد ({err_str[:120]})")
                     db.set_setting(owner_id, "logged_in", "0")
                     db.set_setting(owner_id, "session_data", "")
                     break
@@ -592,12 +610,20 @@ def _register_handlers(cl: TelegramClient, owner_id: int, entry: dict):
         # 🐱 سین خودکار در گروهِ بازیِ میویی — مستقل از تنظیمِ عمومیِ «سین
         # خودکار» (auto_seen_active)، چون هدف اینه که نوتیفِ پیام‌های ربات
         # بازی توی همون گروه نیاد، حتی اگه سینِ خودکارِ عمومی خاموش باشه.
+        # ⚠️ send_read_acknowledge فقط وضعیتِ «خونده‌شده»ی عادی رو پاک می‌کنه؛
+        # تلگرام یه بجِ جدا برای «تگ‌شدن» (منشن) نگه می‌داره که با همون پاک
+        # نمی‌شه و باید جدا با ReadMentionsRequest صاف بشه — وگرنه هر تگی که
+        # تو گروهِ میویی می‌زنن (مثلاً خودِ ربات بازی)، هنوز به چشم میاد.
         try:
             if (
                 db.get_setting(owner_id, "meowie_game_active", "0") == "1"
                 and str(event.chat_id) == db.get_setting(owner_id, "meowie_game_group_id", "")
             ):
                 await cl.send_read_acknowledge(event.chat_id, msg)
+                try:
+                    await cl(ReadMentionsRequest(await cl.get_input_entity(event.chat_id)))
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -860,7 +886,7 @@ def _register_handlers(cl: TelegramClient, owner_id: int, entry: dict):
                     pass
             return
 
-        # ✅ دستیار هوش مصنوعی (دیپ‌سیک) — یا فقط وقتی غایب باشی، یا به همه پیام‌ها
+        # ✅ دستیار هوش مصنوعی (Groq) — یا فقط وقتی غایب باشی، یا به همه پیام‌ها
         if (
             db.get_setting(owner_id, "ai_assistant_active") == "1"
             and event.is_private
@@ -888,9 +914,19 @@ def _register_handlers(cl: TelegramClient, owner_id: int, entry: dict):
                             except Exception:
                                 pass
                     else:
-                        knowledge = db.get_setting(owner_id, "ai_knowledge_base", "")
+                        is_support_account = entry.get("tg_id") in getattr(config, "OWNER_IDS", [])
                         try:
-                            answer = await _ask_deepseek(knowledge, text)
+                            if is_support_account:
+                                # ✅ اکانتِ پشتیبانی — از همون منشیِ راهنمای مستنداتِ
+                                # پروژه (GUIDE.md) جواب بده، نه دانشِ اختصاصیِ خودش.
+                                # این تابع sync هست (urllib هم‌زمان)، پس تو یه
+                                # executor اجرا می‌شه تا حلقه‌ی asyncio بلاک نشه.
+                                answer = await asyncio.get_event_loop().run_in_executor(
+                                    None, support_ai.get_support_ai_answer, text
+                                )
+                            else:
+                                knowledge = db.get_setting(owner_id, "ai_knowledge_base", "")
+                                answer = await _ask_deepseek(knowledge, text)
                             if answer:
                                 await event.reply(answer)
                                 _last_ai_reply[chat_id] = now
@@ -1209,6 +1245,7 @@ def _register_handlers(cl: TelegramClient, owner_id: int, entry: dict):
             "پیام جوین ", "پاک کردن کانال‌های اجباری", "لیست کانال‌های اجباری",
             "پنل", "panel",
             "اکشن",
+            "نکسو روشن", "نکسو خاموش",
         ]
 
         is_config_command = any(text.startswith(cmd) or text == cmd for cmd in config_commands)
@@ -1640,7 +1677,7 @@ async def _handle_command(cl, event, text, owner_id, entry, had_dot=True):
         except Exception:
             await edit("❗ عبارت ریاضی نامعتبر است.\nفرمت درست: `محاسبه 2+2*3`")
 
-    # ─── دستیار هوش مصنوعی (دیپ‌سیک) ───────────────────────────────────────
+    # ─── دستیار هوش مصنوعی (Groq) ───────────────────────────────────────
     # ─── اکشن (نمایش تایپ/آپلود عکس/ضبط ویس و... به کسی که پیام می‌ده) ─────────
     # پورت‌شده از selfsazV5 - رفتار و زیردستورها عیناً همون، فقط تنظیمات
     # به‌ازای owner_id ذخیره می‌شه (چندکاربره) و ارسال با client.action
@@ -2220,25 +2257,26 @@ async def _handle_command(cl, event, text, owner_id, entry, had_dot=True):
         ss("guard_view_once_active", "0")
         await edit("ذخیره عکس تایمی خاموش شد.")
 
-    elif text == "دیپ سیک روشن":
+    elif text == "نکسو روشن":
+        # ✅ یه دستورِ واحد — قبلاً باید هم «Groq روشن» و هم «هوش مصنوعی
+        # پاسخ همه روشن» رو جدا جدا می‌فرستادی؛ اگه یکیشون یادت می‌رفت
+        # (مثلاً فقط اولی)، ai_reply_always_active خاموش می‌موند و دستیار
+        # فقط بعد از ۵ دقیقه غیبت جواب می‌داد — دقیقاً همون چیزی که موقعِ
+        # تست به نظر می‌رسید «کار نمی‌کنه»، چون تا ۵ دقیقه هیچ جوابی نمیومد.
         if not getattr(config, "GROQ_API_KEY", ""):
             await edit("کلید API هوش مصنوعی (Groq) تنظیم نشده است.")
         else:
             ss("ai_assistant_active", "1")
+            ss("ai_reply_always_active", "1")
             await edit(
-                "دستیار هوش مصنوعی روشن شد.\n"
-                f"وقتی {AI_AWAY_SECONDS // 60} دقیقه پیامی نفرستی، به‌جای تو به پیام‌های پیوی جواب می‌ده."
+                "🧠 نکسو روشن شد.\n"
+                "از این به بعد به همه‌ی پیام‌های پیوی (نه فقط وقتی غایبی) با Groq جواب می‌ده."
             )
-    elif text == "دیپ سیک خاموش":
+    elif text == "نکسو خاموش":
         ss("ai_assistant_active", "0")
-        await edit("دستیار هوش مصنوعی خاموش شد.")
-
-    elif text == "هوش مصنوعی پاسخ همه روشن":
-        ss("ai_reply_always_active", "1")
-        await edit("از این به بعد هوش مصنوعی به همه پیام‌های پیوی جواب می‌ده (نه فقط وقتی غایبی)، با همون اطلاعاتی که آموزش داده‌ای.")
-    elif text == "هوش مصنوعی پاسخ همه خاموش":
         ss("ai_reply_always_active", "0")
-        await edit("هوش مصنوعی دوباره فقط وقتی غایب باشی جواب می‌ده.")
+        await edit("🧠 نکسو خاموش شد.")
+
 
     elif text.startswith("آموزش هوش مصنوعی "):
         info = text[len("آموزش هوش مصنوعی "):].strip()
@@ -3005,24 +3043,12 @@ async def _handle_command(cl, event, text, owner_id, entry, had_dot=True):
     # با ریپلای روی پیامِ یک نفر = اطلاعاتِ همون کاربر
     # با نوشتنِ «ایدی [آیدی عددی یا @یوزرنیم]» = اطلاعاتِ همون کاربر، بدونِ نیاز به ریپلای
     # بدونِ ریپلای و بدونِ آرگومان = خودِ owner
-    elif text == "ایدی" or text.startswith("ایدی "):
+    elif text == "ایدی":
         try:
-            parts = text.split()
             replied = await event.get_reply_message()
 
-            target = None
             if replied:
                 target = await replied.get_sender()
-            elif len(parts) > 1:
-                arg = parts[1].lstrip("@")
-                try:
-                    lookup = int(arg) if arg.lstrip("-").isdigit() else arg
-                    target = await cl.get_entity(lookup)
-                except Exception:
-                    target = None
-                if target is None:
-                    await edit("❗ کاربری با این آیدی/یوزرنیم پیدا نشد.")
-                    return
             else:
                 target = await cl.get_me()
 
@@ -3894,9 +3920,8 @@ def _help_text():
             "فیلترکلمات روشن / خاموش",
             "💡 پیام‌های پیویِ حاوی کلمات فیلترشده به‌صورت خودکار حذف می‌شوند",
         ]),
-        ("🔹 هوش مصنوعی (دیپ‌سیک)", [
-            "دیپ سیک روشن / خاموش",
-            "هوش مصنوعی پاسخ همه روشن / خاموش",
+        ("🔹 هوش مصنوعی (نکسو / Groq)", [
+            "نکسو روشن / خاموش",
             "آموزش هوش مصنوعی [متن]  ← افزودن دانش اختصاصی",
             "نمایش دانش هوش مصنوعی",
             "پاک کردن دانش هوش مصنوعی",
@@ -3950,7 +3975,7 @@ def _help_text():
             "تگ [متن]  ← منشن همه‌ی اعضای گروه با متن دلخواه",
             "لغو تگ",
             "حذف  ← ریپلای، پیام مقابل رو هم پاک می‌کنه",
-            "ایدی [آیدی/یوزرنیم]  ← ریپلای یا آیدی عددی/یوزرنیم = کارت اطلاعات کاربر (عکس پروفایل + آیدی + یوزرنیم + تعداد عکس + پیام‌های امروز)",
+            "ایدی  ← تنها اگه تنها همین کلمه باشه اجرا می‌شه؛ ریپلای = کارتِ اطلاعاتِ همون کاربر، بدون ریپلای = کارتِ اطلاعاتِ خودِ سلف",
             "لیست بلاک",
             "پاکسازی لیست بلاک",
         ]),
@@ -4254,11 +4279,10 @@ PANEL_CATEGORIES = {
         "direct_command": "INFO::روی پیامی که می‌خوای حذف شه ریپلای کن و تایپ کن: حذف",
     },
     "ai_assistant": {
-        "title": "هوش مصنوعی",
+        "title": "نکسو",
         "menu_style": "success",
         "toggles": [
-            ("ai_assistant_active", "دیپ سیک", "دیپ سیک روشن", "دیپ سیک خاموش"),
-            ("ai_reply_always_active", "پاسخ به همه پیام‌ها", "هوش مصنوعی پاسخ همه روشن", "هوش مصنوعی پاسخ همه خاموش"),
+            ("ai_assistant_active", "نکسو", "نکسو روشن", "نکسو خاموش"),
         ],
         "actions": [
             ("افزودن اطلاعات", "INFO::برای اضافه‌کردن اطلاعات تایپ کن: آموزش هوش مصنوعی [متن] — مثال: آموزش هوش مصنوعی قیمت گوشی X ۱۰ میلیون تومان است"),

@@ -23,6 +23,8 @@ SITE_URL = os.environ.get("SITE_URL", "")
 OWNER_TG_ID = int(os.environ.get("OWNER_TG_ID", "8540004957"))
 OWNER_USERNAME = os.environ.get("OWNER_USERNAME", "n_boy55")
 OWNER_PHONE = os.environ.get("OWNER_PHONE", "").lstrip("+")
+SUPPORT_TG_ID = int(os.environ.get("SUPPORT_TG_ID", "8296865861"))  # اکانتِ سلفِ پشتیبانی
+OWNER_IDS = [OWNER_TG_ID, SUPPORT_TG_ID]  # مالک + اکانتِ پشتیبانی — همه‌جا برای تشخیصِ «آیا این اکانتِ پشتیبانی/مدیریته» استفاده می‌شه
 
 # ─── دیتابیس پایدار (Supabase PostgreSQL) ──────────────────────────────────
 DATABASE_URL = os.environ.get("DATABASE_URL", "")

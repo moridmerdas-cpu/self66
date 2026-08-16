@@ -11,16 +11,61 @@ import redis_cache as rc
 
 # ─── اتصال به دیتابیس ──────────────────────────────────────────────────────────
 import threading
+import time
 _conn = None
 _conn_lock = threading.RLock()
+_last_used = 0.0
+_PING_IDLE_SECONDS = 45  # اگه کانکشن بیشتر از این بی‌کار بوده، قبل از استفاده تستش کن
+
 
 def get_conn():
-    """دریافت اتصال به دیتابیس (thread-safe)"""
-    global _conn
+    """دریافت اتصال به دیتابیس (thread-safe) — با پینگِ سبک برای کانکشنِ بی‌کار."""
+    global _conn, _last_used
+    now = time.time()
+
     if _conn is None or _conn.closed:
-        _conn = psycopg2.connect(DATABASE_URL, sslmode='require', connect_timeout=10)
-        _conn.autocommit = True
+        _conn = _new_connection()
+        _last_used = now
+        return _conn
+
+    # ✅ اگه کانکشن مدتی بی‌کار بوده، ممکنه سمتِ سرور (Supabase pooler) بی‌سروصدا
+    # قطعش کرده باشه بدون اینکه سمتِ کلاینت هنوز متوجه شده باشه (نه یه
+    # OperationalError واضح، فقط سوکتِ مرده). یه پینگِ سبک قبل از استفاده‌ی
+    # واقعی، این حالت رو زودتر می‌گیره و به‌جای شکست‌خوردنِ کوئریِ اصلی
+    # (مثلاً افزودنِ چنلِ جوینِ اجباری)، همینجا ساکت‌وصل‌مجدد می‌کنه.
+    if now - _last_used > _PING_IDLE_SECONDS:
+        try:
+            ping_cur = _conn.cursor()
+            ping_cur.execute("SELECT 1")
+            ping_cur.close()
+        except Exception:
+            try:
+                _conn.close()
+            except Exception:
+                pass
+            _conn = _new_connection()
+
+    _last_used = now
     return _conn
+
+
+def _new_connection():
+    conn = psycopg2.connect(
+        DATABASE_URL,
+        sslmode='require',
+        connect_timeout=10,
+        # ✅ کیپ‌الایوِ TCP — بدونِ این، پروکسی/پولرِ بینِ ما و Postgres
+        # (خیلی از فراهم‌کننده‌های مدیریت‌شده مثلِ Supabase از این پولرها
+        # استفاده می‌کنن) می‌تونه کانکشنِ بی‌کار رو بدونِ اطلاع‌دادن به
+        # کلاینت قطع کنه؛ کیپ‌الایو باعث می‌شه یا کانکشن زنده بمونه، یا
+        # مرگش زودتر (با یه خطای واضح) کشف بشه.
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=5,
+    )
+    conn.autocommit = True
+    return conn
 
 def execute_query(query: str, params: tuple = None, fetch_one: bool = False, fetch_all: bool = False, _retry: bool = True):
     """
@@ -40,17 +85,20 @@ def execute_query(query: str, params: tuple = None, fetch_one: bool = False, fet
     امتحان می‌شه — تنها اگه اون تلاشِ دوم هم شکست بخوره خطا بالا می‌ره.
     """
     with _conn_lock:
-        global _conn
+        global _conn, _last_used
         conn = get_conn()
         try:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             try:
                 cur.execute(query, params)
                 if fetch_one:
-                    return cur.fetchone()
+                    result = cur.fetchone()
                 elif fetch_all:
-                    return cur.fetchall()
-                return cur.rowcount
+                    result = cur.fetchall()
+                else:
+                    result = cur.rowcount
+                _last_used = time.time()
+                return result
             finally:
                 cur.close()
         except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
