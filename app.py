@@ -25,6 +25,37 @@ app = Flask(__name__)
 app.secret_key = config.SECRET_KEY
 app.config["PERMANENT_SESSION_LIFETIME"] = 180  # ۳ دقیقه بی‌کاری → لاگ‌اوت خودکار
 
+# کوکیِ سشن باید cross-origin هم ارسال بشه (اپ APK یک origin جداست)، پس
+# SameSite رو روی None می‌ذاریم. مرورگرها SameSite=None رو فقط با Secure=True
+# (یعنی روی HTTPS) قبول می‌کنن — سرور حتماً باید پشت HTTPS باشه (مثل Render).
+app.config["SESSION_COOKIE_SAMESITE"] = "None"
+app.config["SESSION_COOKIE_SECURE"] = True
+
+# ─── CORS برای اپ موبایل (WebView داخل APK) ──────────────────────────────────
+# اپ APK از یک origin متفاوت (یا بدون origin، مثل file://) درخواست می‌زنه،
+# پس بدون این هدرها مرورگرِ داخلیِ اپ درخواست رو مسدود می‌کنه و کاربر فقط
+# خطای «اتصال برقرار نشد» می‌بینه. چون از کوکیِ سشن (credentials) استفاده
+# می‌کنیم، نمی‌شه از "*" استفاده کرد — باید origin واقعیِ درخواست رو echo کنیم.
+@app.after_request
+def _add_cors_headers(response):
+    origin = request.headers.get("Origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+    else:
+        # بعضی WebViewها (به‌خصوص وقتی فایل HTML به‌صورت محلی/APK لود شده)
+        # اصلاً هدر Origin نمی‌فرستن؛ در این حالت هم اجازه می‌دیم.
+        response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    return response
+
+
+@app.route("/", defaults={"path": ""}, methods=["OPTIONS"])
+@app.route("/<path:path>", methods=["OPTIONS"])
+def _cors_preflight(path):
+    return ("", 204)
+
 
 def _ensure_helper_bot():
     """
